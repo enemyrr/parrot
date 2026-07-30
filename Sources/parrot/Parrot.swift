@@ -220,7 +220,6 @@ struct Run: ParsableCommand {
                         await MainActor.run {
                             if let text, !text.isEmpty {
                                 TextInjector.inject(text)
-                                menuBar.reloadRecents()
                             }
                             overlay?.hide()
                             menuBar.setState(.idle)

@@ -195,7 +195,11 @@ This, plus the menu bar item, is why the process needs an `NSApplication` run lo
 
 ### `MenuBarController`
 
-`NSStatusItem` with an inlined template SVG. Shows current state (`idle` / `recording` / `hands-free` / `transcribing`) and the last 10 transcripts. Clicking one **copies it** rather than re-injecting: by the time the menu closes, focus has returned to whatever app was underneath, and typing into it uninvited is a worse surprise than a clipboard write.
+`NSStatusItem` with an inlined template SVG. Shows current state (`idle` / `recording` / `hands-free` / `transcribing`), with the last 10 transcripts tucked into a **Recent** submenu — inline they turned the menu into a wall of text.
+
+The submenu is populated in `menuNeedsUpdate(_:)` rather than pushed on every transcript. That keeps the injection path free of UI work and makes stale entries structurally impossible: the list is built at the moment it's shown.
+
+Clicking a transcript **copies it** rather than re-injecting. By the time the menu closes, focus has returned to whatever app was underneath, and typing into it uninvited is a worse surprise than a clipboard write.
 
 Since the process runs `.accessory` — no dock icon, no window — this is the only persistent surface the user can actually see and click.
 
