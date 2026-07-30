@@ -12,7 +12,9 @@ permissions:
 jobs:
   build:
     name: build arm64 macOS binary
-    runs-on: macos-15
+    # macos-15 ships an Xcode 16 SDK, which has no FoundationModels framework —
+    # the on-device cleanup path won't compile there.
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
@@ -35,7 +37,11 @@ jobs:
 
       - name: stage
         run: |
-          BIN=.build/arm64-apple-macosx/release/parrot
+          # Ask the toolchain where it put the binary rather than hardcoding a
+          # path — the layout moved from .build/<triple>/release to
+          # .build/out/Products/Release in newer Swift versions.
+          BIN="$(swift build -c release --arch arm64 --show-bin-path)/parrot"
+          test -x "$BIN" || { echo "no binary at $BIN"; exit 1; }
           file "$BIN"
           mkdir -p dist
           cp "$BIN" dist/parrot

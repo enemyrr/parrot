@@ -16,12 +16,65 @@ struct Check {
 }
 
 enum DoctorReport {
-    static func run() -> [Check] {
+    /// `config` is nil when the file failed to parse — that's itself a finding.
+    static func run(config: Config?) -> [Check] {
         [
             checkMicrophone(),
             checkAccessibility(),
             checkFnKeyMapping(),
+            checkConfig(config),
+            checkCleanup(config),
         ]
+    }
+
+    static func checkConfig(_ config: Config?) -> Check {
+        let path = ParrotPaths.configFile.path
+        guard FileManager.default.fileExists(atPath: path) else {
+            return Check(name: "config", status: .ok, remediation: nil)
+        }
+        guard config != nil else {
+            return Check(
+                name: "config",
+                status: .fail("could not parse \(path)"),
+                remediation: "fix the TOML, or `parrot config init --force` to start over"
+            )
+        }
+        return Check(name: "config", status: .ok, remediation: nil)
+    }
+
+    /// Cleanup is opt-in, so "off" is a pass. When it's on, verify the chosen
+    /// provider can actually run here — otherwise the user finds out mid-dictation.
+    static func checkCleanup(_ config: Config?) -> Check {
+        guard let config, config.cleanup.enabled else {
+            return Check(name: "cleanup", status: .ok, remediation: nil)
+        }
+        switch config.cleanup.provider {
+        case .apple:
+            if #available(macOS 26, *) {
+                if let reason = AppleFoundationCleaner.unavailableReason {
+                    return Check(
+                        name: "cleanup",
+                        status: .warn(reason),
+                        remediation: "set provider = \"anthropic\", or disable cleanup"
+                    )
+                }
+                return Check(name: "cleanup", status: .ok, remediation: nil)
+            }
+            return Check(
+                name: "cleanup",
+                status: .warn("provider \"apple\" needs macOS 26 or later"),
+                remediation: "set provider = \"anthropic\", or disable cleanup"
+            )
+        case .anthropic:
+            guard Keychain.anthropicAPIKey() != nil else {
+                return Check(
+                    name: "cleanup",
+                    status: .warn("no Anthropic API key"),
+                    remediation: "run `parrot cleanup set-key`, or set ANTHROPIC_API_KEY"
+                )
+            }
+            return Check(name: "cleanup", status: .ok, remediation: nil)
+        }
     }
 
     static func checkMicrophone() -> Check {
@@ -50,12 +103,39 @@ enum DoctorReport {
         if AXIsProcessTrusted() {
             return Check(name: "accessibility", status: .ok, remediation: nil)
         }
-        let parent = parentProcessName() ?? "your terminal"
         return Check(
             name: "accessibility",
             status: .fail("not granted"),
-            remediation: "System Settings → Privacy & Security → Accessibility → enable for \(parent)"
+            remediation: accessibilityRemediation()
         )
+    }
+
+    /// macOS grants Accessibility to an *application* or a standalone binary —
+    /// never to the shell in between. Naming the immediate parent process would
+    /// send the user hunting for "zsh" in a list that will never contain it.
+    private static func accessibilityRemediation() -> String {
+        let settings = "System Settings → Privacy & Security → Accessibility"
+        let parent = parentProcessName()
+
+        // Started by launchd: the daemon binary itself is the TCC subject.
+        if getppid() == 1 || parent == "launchd" {
+            return "\(settings) → enable parrot"
+        }
+
+        let shells: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh"]
+        if let parent, !shells.contains(parent) {
+            return "\(settings) → enable \(parent)"
+        }
+
+        // Running from a shell — the grant lands on the terminal app hosting it,
+        // which we can't reliably name from here.
+        return """
+            \(settings) → enable the terminal app you ran parrot from \
+            (Terminal, iTerm, Ghostty, VS Code…), not the shell.
+                Already listed? The grant is tied to the binary's contents, so \
+            a rebuilt parrot needs it toggled off and back on.
+                Or run `parrot install --launch-at-login` and grant parrot itself.
+            """
     }
 
     /// macOS routes Fn (🌐) to one of: Do Nothing / Change Input Source / Show Emoji / Start Dictation.
