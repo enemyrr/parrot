@@ -55,6 +55,29 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let settings = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettingsClicked),
+            keyEquivalent: ","
+        )
+        settings.target = self
+        menu.addItem(settings)
+
+        // Config is read once at startup, so editing it is only half the job.
+        // Offer the other half — but only when launchd can actually bring us
+        // back; from a terminal this would just quit, which isn't a restart.
+        if isManagedByLaunchd {
+            let restart = NSMenuItem(
+                title: "Restart parrot",
+                action: #selector(restartClicked),
+                keyEquivalent: ""
+            )
+            restart.target = self
+            menu.addItem(restart)
+        }
+
+        menu.addItem(.separator())
+
         let quit = NSMenuItem(
             title: "Quit parrot",
             action: #selector(quitClicked),
@@ -66,6 +89,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         statusItem.menu = menu
         configureButton()
     }
+
+    /// A LaunchAgent-started process is reparented to launchd (pid 1).
+    private var isManagedByLaunchd: Bool { getppid() == 1 }
 
     func setState(_ state: State) {
         switch state {
@@ -179,6 +205,40 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard let text = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Open `config.toml` in whatever app handles it, creating the commented
+    /// default first — opening a file that isn't there just fails, and a blank
+    /// editor would tell the user nothing about what's configurable.
+    @objc private func openSettingsClicked() {
+        let url = ParrotPaths.configFile
+        if !FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try DefaultConfigTemplate.contents.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                FileHandle.standardError.write(Data("couldn't create config: \(error)\n".utf8))
+                return
+            }
+        }
+        // .toml has no guaranteed handler; fall back to revealing it in Finder
+        // so the click always does something.
+        if !NSWorkspace.shared.open(url) {
+            NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
+        }
+    }
+
+    /// `kickstart -k` rather than terminating: launchd's KeepAlive ignores a
+    /// clean exit, so quitting would stop parrot rather than restart it.
+    @objc private func restartClicked() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(LaunchAgent.label)"]
+        try? task.run()
+        // launchctl kills this process as part of the restart; nothing to wait for.
     }
 
     @objc private func openHistoryClicked() {
