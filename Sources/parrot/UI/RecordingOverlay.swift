@@ -59,6 +59,9 @@ final class RecordingOverlay {
         if needsAppear {
             positionAtBottomCenter(window)
             window.orderFrontRegardless()
+            // The off-screen layout draws `lastVisible`, so point it at the
+            // incoming state before that first pass.
+            model.lastVisible = state
             // Defer the state change so SwiftUI lays out in the .hidden style
             // first, then animates to the visible style on the next runloop tick.
             DispatchQueue.main.async { [model] in
@@ -213,7 +216,13 @@ final class OverlayModel: ObservableObject {
     /// talking or you can't tell speech from silence.
     private static let gate: Float = 0.02
 
-    @Published var state: RecordingOverlay.State = .hidden
+    @Published var state: RecordingOverlay.State = .hidden {
+        didSet { if state != .hidden { lastVisible = state } }
+    }
+    /// What the pill keeps drawing on its way out. `state` flips to `.hidden`
+    /// the instant the exit starts, so switching content on it swapped the
+    /// spinner back to the waveform for the length of the collapse.
+    var lastVisible: RecordingOverlay.State = .recording
     @Published var style: OverlayStyle = .bars
     /// Model download progress, 0…1. Only read in the `.downloading` state.
     @Published var progress: Double = 0
@@ -346,7 +355,7 @@ struct OverlayPill: View {
 
     @ViewBuilder
     private var content: some View {
-        switch model.state {
+        switch isHidden ? model.lastVisible : model.state {
         case .hidden, .recording:
             Waveform(model: model)
         case .downloading:
