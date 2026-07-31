@@ -14,11 +14,19 @@ actor ParakeetTranscriber: Transcriber {
     private let language: Language?
     private var manager: AsrManager?
     private var decoderLayers = 2
+    /// Reports first-run model download/compile progress. Called on an
+    /// unspecified queue — hop to the main actor before touching UI.
+    private let downloadProgress: (@Sendable (DownloadProgress) -> Void)?
 
-    init(model: TranscriptionModel, language: Language? = nil) {
+    init(
+        model: TranscriptionModel,
+        language: Language? = nil,
+        downloadProgress: (@Sendable (DownloadProgress) -> Void)? = nil
+    ) {
         self.modelID = model.id
         self.model = model
         self.language = language
+        self.downloadProgress = downloadProgress
     }
 
     func warmUp() async throws {
@@ -29,7 +37,10 @@ actor ParakeetTranscriber: Transcriber {
         let version = Self.version(for: engineModelID)
 
         FileHandle.standardError.write(Data("loading \(model.id)...\n".utf8))
-        let models = try await AsrModels.downloadAndLoad(version: version)
+        let models = try await AsrModels.downloadAndLoad(
+            version: version,
+            progressHandler: downloadProgress
+        )
         // melChunkContext is an English long-form fix that skews v3's
         // multilingual decoder back toward its English prior; FluidAudio
         // recommends disabling it for v3. Only matters past the ~30s

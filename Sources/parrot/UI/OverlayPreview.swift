@@ -61,6 +61,7 @@ struct OverlayPreview: ParsableCommand {
                 case "l": overlay.show(.latched); print("→ latched")
                 case "r": overlay.show(.recording); print("→ recording")
                 case "t": overlay.show(.transcribing); print("→ transcribing")
+                case "p": Self.simulateDownload(overlay); print("→ download progress")
                 case "d":
                     Self.toggleReadout(overlay)
                 case "+", "=", "-", "_":
@@ -80,6 +81,32 @@ struct OverlayPreview: ParsableCommand {
     }
 
     private static var readoutTimer: Timer?
+    private static var downloadTimer: Timer?
+
+    /// Fakes a ~8s model download so the progress pill can be tuned without
+    /// deleting the real model cache and waiting on 460 MB.
+    @MainActor
+    private static func simulateDownload(_ overlay: RecordingOverlay) {
+        downloadTimer?.invalidate()
+        var fraction = 0.0
+        let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                fraction = min(1, fraction + 0.006)
+                overlay.setDownloadProgress(fraction, label: "downloading parakeet-v3")
+                if fraction >= 1 {
+                    timer.invalidate()
+                    downloadTimer = nil
+                    overlay.completeDownload()
+                    // Back to the mic view once the finish has fully played out.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) {
+                        MainActor.assumeIsolated { overlay.show(.recording) }
+                    }
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        downloadTimer = timer
+    }
 
     /// Prints what the meter is actually seeing — input level, the room floor
     /// it has learned, and the resulting bar height. Beats guessing at whether
@@ -114,7 +141,7 @@ struct OverlayPreview: ParsableCommand {
         Listening — talk at it. Style '\(style.rawValue)', \
         sensitivity \(String(format: "%.2f", sensitivity)).
           1 bars   2 line
-          r recording   l latched   t transcribing
+          r recording   l latched   t transcribing   p download progress
           + / -  sensitivity (higher picks up quieter speech)
           d live level readout
           q quit

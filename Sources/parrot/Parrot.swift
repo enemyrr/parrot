@@ -123,7 +123,33 @@ struct Run: ParsableCommand {
             throw ExitCode(1)
         }
 
-        let transcriber = ParakeetTranscriber(model: chosenModel, language: language)
+        // Created before warm-up so a first-run model download (~460 MB) has
+        // somewhere to show progress; reused afterwards for recording states.
+        let overlay: RecordingOverlay? = noOverlay
+            ? nil
+            : MainActor.assumeIsolated {
+                RecordingOverlay(style: config.overlay.style, sensitivity: config.overlay.sensitivity)
+            }
+
+        let modelID = chosenModel.id
+        let progressLog = MainActor.assumeIsolated { DownloadProgressLog() }
+        let transcriber = ParakeetTranscriber(
+            model: chosenModel,
+            language: language,
+            downloadProgress: { progress in
+                let verb: String
+                switch progress.phase {
+                case .listing: verb = "preparing"
+                case .downloading: verb = "downloading"
+                case .compiling: verb = "compiling"
+                }
+                let fraction = progress.fractionCompleted
+                Task { @MainActor in
+                    overlay?.setDownloadProgress(fraction, label: "\(verb) \(modelID)")
+                    progressLog.log(verb: verb, fraction: fraction, model: modelID)
+                }
+            }
+        )
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
         Task.detached {
@@ -134,7 +160,13 @@ struct Run: ParsableCommand {
             }
             warmupSemaphore.signal()
         }
-        warmupSemaphore.wait()
+        // Pump the runloop instead of blocking on the semaphore: the download
+        // pill can't appear — let alone animate — with the main thread parked.
+        while warmupSemaphore.wait(timeout: .now()) == .timedOut {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        // No-op if the pill never appeared (models were already cached).
+        MainActor.assumeIsolated { overlay?.completeDownload() }
         if let warmupError {
             FileHandle.standardError.write(Data("warmup failed: \(warmupError)\n".utf8))
             throw ExitCode(1)
@@ -179,11 +211,6 @@ struct Run: ParsableCommand {
         let monitor = HotkeyMonitor(mask: hotkeyMask, config: config.latch, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
-        let overlay: RecordingOverlay? = noOverlay
-            ? nil
-            : MainActor.assumeIsolated {
-                RecordingOverlay(style: config.overlay.style, sensitivity: config.overlay.sensitivity)
-            }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
@@ -319,6 +346,22 @@ struct Run: ParsableCommand {
             "listening on \(hotkeyName) hold\(latchHint) · model: \(chosenModel.id) · ^C to quit\n".utf8
         ))
         app.run()
+    }
+}
+
+/// Mirrors download progress to stderr in coarse steps — the pill is absent
+/// under --no-overlay and invisible over ssh, but `parrot logs -f` is not.
+@MainActor
+private final class DownloadProgressLog {
+    private var lastDecile = -1
+
+    func log(verb: String, fraction: Double, model: String) {
+        let decile = Int(fraction * 10)
+        guard decile != lastDecile else { return }
+        lastDecile = decile
+        FileHandle.standardError.write(Data(
+            "\(verb) \(model)… \(Int(fraction * 100))%\n".utf8
+        ))
     }
 }
 
