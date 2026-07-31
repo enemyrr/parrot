@@ -4,7 +4,7 @@ import Foundation
 /// the binary has no resource bundle to ship alongside it.
 enum DefaultConfigTemplate {
     static let contents = """
-    # parrot configuration — https://github.com/digimata/parrot
+    # parrot configuration — https://github.com/enemyrr/parrot
     # Every value below is a default; delete a line to keep the default.
 
     model  = "parakeet-v3"   # `parrot models list` for options

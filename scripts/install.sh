@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # parrot installer.
-#   curl -fsSL https://digimata.github.io/parrot/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/enemyrr/parrot/master/scripts/install.sh | sh
 #
 # Fetches the latest arm64 macOS binary from GitHub Releases, drops it
 # in /usr/local/bin, and strips the quarantine xattr so Gatekeeper doesn't
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-REPO="digimata/parrot"
+REPO="enemyrr/parrot"
 BIN_NAME="parrot"
 INSTALL_DIR="/usr/local/bin"
 ASSET="parrot-macos-arm64.tar.gz"
