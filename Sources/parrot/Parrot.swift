@@ -1,5 +1,6 @@
 import AppKit
 import ArgumentParser
+import FluidAudio
 import Foundation
 
 @main
@@ -92,7 +93,37 @@ struct Run: ParsableCommand {
             chosenModel = m
         }
 
-        let transcriber = ParakeetTranscriber(model: chosenModel)
+        // Resolve before warm-up so a bad language code fails immediately
+        // rather than after a model load.
+        var language: Language?
+        switch LanguageSelection.resolve(config.languages) {
+        case .filter(let resolved):
+            language = resolved
+            let script = LanguageSelection.describe(resolved.script)
+            FileHandle.standardError.write(Data(
+                "languages: \(config.languages.joined(separator: ", ")) · restricting output to \(script) script\n".utf8
+            ))
+        case .unrestricted:
+            break
+        case .conflicting(let scripts):
+            // Nothing to enforce — a token can't be two scripts at once.
+            FileHandle.standardError.write(Data("""
+                languages: \(scripts.joined(separator: " + ")) scripts configured together, \
+                so no script filtering is applied.
+                  List languages that share one alphabet to filter out the others.
+
+                """.utf8))
+        case .unknownCodes(let bad):
+            FileHandle.standardError.write(Data(
+                "unknown language code(s): \(bad.joined(separator: ", "))\n".utf8
+            ))
+            FileHandle.standardError.write(Data(
+                "supported: \(LanguageSelection.supportedCodes.joined(separator: " "))\n".utf8
+            ))
+            throw ExitCode(1)
+        }
+
+        let transcriber = ParakeetTranscriber(model: chosenModel, language: language)
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
         Task.detached {
@@ -152,6 +183,7 @@ struct Run: ParsableCommand {
             cleaner: cleaner,
             cleanup: config.cleanup,
             store: store,
+            languages: LanguageSelection.displayNames(config.languages),
             stats: stats,
             modelID: chosenModel.id
         )

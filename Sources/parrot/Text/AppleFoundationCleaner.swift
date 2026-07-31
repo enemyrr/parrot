@@ -30,12 +30,12 @@ struct AppleFoundationCleaner: TextCleaner {
         }
     }
 
-    func clean(_ text: String, vocabulary: [String]) async throws -> String {
+    func clean(_ text: String, context: CleanupContext) async throws -> String {
         if let reason = Self.unavailableReason {
             throw CleanerError.unavailable(reason)
         }
         let session = LanguageModelSession(
-            instructions: CleanupPrompt.instructions(custom: prompt, vocabulary: vocabulary)
+            instructions: CleanupPrompt.instructions(custom: prompt, context: context)
         )
         // Deterministic: two identical dictations should clean identically.
         let options = GenerationOptions(temperature: 0)

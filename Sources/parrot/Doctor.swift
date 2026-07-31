@@ -23,8 +23,43 @@ enum DoctorReport {
             checkAccessibility(),
             checkFnKeyMapping(),
             checkConfig(config),
+            checkLanguages(config),
             checkCleanup(config),
         ]
+    }
+
+    /// Validates `languages` and spells out what it will actually do — the
+    /// setting reads like "only recognise these languages", but it only
+    /// constrains the alphabet. Saying so here beats a surprise later.
+    static func checkLanguages(_ config: Config?) -> Check {
+        guard let config, !config.languages.isEmpty else {
+            return Check(name: "languages", status: .ok, remediation: nil)
+        }
+        let listed = config.languages.joined(separator: ", ")
+
+        switch LanguageSelection.resolve(config.languages) {
+        case .filter(let language):
+            let script = LanguageSelection.describe(language.script)
+            return Check(
+                name: "languages",
+                status: .ok,
+                remediation: "\(listed) — output restricted to the \(script) alphabet"
+            )
+        case .unrestricted:
+            return Check(name: "languages", status: .ok, remediation: nil)
+        case .conflicting(let scripts):
+            return Check(
+                name: "languages",
+                status: .warn("\(listed) span \(scripts.joined(separator: " + ")) alphabets"),
+                remediation: "no filtering is possible across alphabets — list languages sharing one"
+            )
+        case .unknownCodes(let bad):
+            return Check(
+                name: "languages",
+                status: .fail("unknown code(s): \(bad.joined(separator: ", "))"),
+                remediation: "supported: \(LanguageSelection.supportedCodes.joined(separator: " "))"
+            )
+        }
     }
 
     static func checkConfig(_ config: Config?) -> Check {

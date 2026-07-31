@@ -9,12 +9,16 @@ import Foundation
 actor ParakeetTranscriber: Transcriber {
     let modelID: String
     private let model: TranscriptionModel
+    /// Script hint for the decoder. See `LanguageSelection` — this constrains
+    /// the alphabet tokens may come from, not which language is recognised.
+    private let language: Language?
     private var manager: AsrManager?
     private var decoderLayers = 2
 
-    init(model: TranscriptionModel) {
+    init(model: TranscriptionModel, language: Language? = nil) {
         self.modelID = model.id
         self.model = model
+        self.language = language
     }
 
     func warmUp() async throws {
@@ -46,7 +50,7 @@ actor ParakeetTranscriber: Transcriber {
         // Fresh decoder state per utterance — each hotkey press is independent,
         // so carrying state across would leak context between dictations.
         var state = try TdtDecoderState(decoderLayers: decoderLayers)
-        let result = try await manager.transcribe(audio, decoderState: &state)
+        let result = try await manager.transcribe(audio, decoderState: &state, language: language)
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

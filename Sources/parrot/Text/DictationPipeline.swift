@@ -13,6 +13,9 @@ struct DictationPipeline {
     let cleaner: TextCleaner?
     let cleanup: CleanupConfig
     let store: TranscriptStore?
+    /// Passed to the cleaner so it doesn't "correct" one of your
+    /// languages into another. Display names, not ISO codes.
+    let languages: [String]
     /// Independent of `store` — stats hold no text, so they keep running for
     /// someone who has turned history off.
     let stats: StatsStore?
@@ -45,7 +48,10 @@ struct DictationPipeline {
             let result = await cleanWithFallback(
                 text,
                 cleaner: cleaner,
-                vocabulary: wordlist.vocabulary,
+                context: CleanupContext(
+                    vocabulary: wordlist.vocabulary,
+                    languages: languages
+                ),
                 timeout: cleanup.timeoutS
             )
             text = wordlist.apply(to: result.text)

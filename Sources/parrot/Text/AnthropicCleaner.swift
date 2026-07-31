@@ -15,7 +15,7 @@ struct AnthropicCleaner: TextCleaner {
         self.prompt = prompt
     }
 
-    func clean(_ text: String, vocabulary: [String]) async throws -> String {
+    func clean(_ text: String, context: CleanupContext) async throws -> String {
         guard let key = Keychain.anthropicAPIKey() else {
             throw CleanerError.missingAPIKey
         }
@@ -32,7 +32,7 @@ struct AnthropicCleaner: TextCleaner {
         let body = Request(
             model: model,
             maxTokens: Self.maxTokens(for: text),
-            system: CleanupPrompt.instructions(custom: prompt, vocabulary: vocabulary),
+            system: CleanupPrompt.instructions(custom: prompt, context: context),
             messages: [.init(role: "user", content: text)]
         )
         request.httpBody = try JSONEncoder().encode(body)

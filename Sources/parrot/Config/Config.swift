@@ -9,6 +9,9 @@ import TOMLDecoder
 /// dictation behaving oddly.
 struct Config: Decodable {
     var model: String?
+    /// Languages you actually speak, as ISO codes. Empty means no constraint.
+    /// See `LanguageSelection` for what this does and does not do.
+    var languages: [String]
     var hotkey: String
     var latch: LatchConfig
     var cleanup: CleanupConfig
@@ -21,6 +24,7 @@ struct Config: Decodable {
 
     private init() {
         model = nil
+        languages = []
         hotkey = "fn"
         latch = .default
         cleanup = .default
@@ -31,7 +35,7 @@ struct Config: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case model, hotkey
+        case model, languages, hotkey
         case latch = "hotkey_latch"
         case cleanup, wordlist, history, stats, overlay
     }
@@ -40,6 +44,7 @@ struct Config: Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Config.default
         model = try c.decodeIfPresent(String.self, forKey: .model)
+        languages = try c.decodeIfPresent([String].self, forKey: .languages) ?? d.languages
         hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? d.hotkey
         latch = try c.decodeIfPresent(LatchConfig.self, forKey: .latch) ?? d.latch
         cleanup = try c.decodeIfPresent(CleanupConfig.self, forKey: .cleanup) ?? d.cleanup
