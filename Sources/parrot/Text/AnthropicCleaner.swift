@@ -5,6 +5,8 @@ import Foundation
 struct AnthropicCleaner: TextCleaner {
     var name: String { "anthropic (\(model))" }
 
+    static let defaultModel = "claude-haiku-4-5"
+
     private let model: String
     private let prompt: String
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
@@ -16,8 +18,8 @@ struct AnthropicCleaner: TextCleaner {
     }
 
     func clean(_ text: String, context: CleanupContext) async throws -> String {
-        guard let key = Keychain.anthropicAPIKey() else {
-            throw CleanerError.missingAPIKey
+        guard let key = Keychain.apiKey(for: .anthropic) else {
+            throw CleanerError.missingAPIKey(.anthropic)
         }
 
         var request = URLRequest(url: Self.endpoint)

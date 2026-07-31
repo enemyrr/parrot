@@ -148,14 +148,28 @@ struct Run: ParsableCommand {
         stats?.backfillFromHistoryIfNeeded()
 
         var cleaner: TextCleaner?
+        var cleanupStatus = "off"
+        var cleanupDetail: String?
         if config.cleanup.enabled {
             switch makeCleaner(for: config.cleanup) {
             case .success(let c):
                 cleaner = c
                 FileHandle.standardError.write(Data("cleanup: \(c.name)\n".utf8))
+                // makeCleaner defers key and model-availability checks to each
+                // request; ask doctor now so the menu doesn't claim a cleaner
+                // that will fail every dictation.
+                let check = DoctorReport.checkCleanup(config)
+                if case .warn(let why) = check.status {
+                    cleanupStatus = "⚠ \(why)"
+                    cleanupDetail = check.remediation
+                } else {
+                    cleanupStatus = c.name
+                }
             case .failure(let error):
                 // Not fatal — dictation still works, just without cleanup.
                 FileHandle.standardError.write(Data("cleanup disabled — \(error)\n".utf8))
+                cleanupStatus = "⚠ unavailable"
+                cleanupDetail = "\(error)"
             }
         }
 
@@ -174,7 +188,12 @@ struct Run: ParsableCommand {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
         let menuBar = MainActor.assumeIsolated {
-            MenuBarController(modelID: chosenModel.id, store: store)
+            MenuBarController(
+                modelID: chosenModel.id,
+                cleanupStatus: cleanupStatus,
+                cleanupDetail: cleanupDetail,
+                store: store
+            )
         }
 
         let pipeline = DictationPipeline(
@@ -590,6 +609,8 @@ struct Stats: ParsableCommand {
     }
 }
 
+extension Keychain.Account: ExpressibleByArgument {}
+
 struct Cleanup: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage the optional transcript cleanup pass.",
@@ -599,11 +620,14 @@ struct Cleanup: ParsableCommand {
     struct SetKey: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "set-key",
-            abstract: "Store an Anthropic API key in the Keychain."
+            abstract: "Store a provider API key in the Keychain."
         )
 
+        @Argument(help: "Provider the key belongs to (anthropic | openai).")
+        var provider: Keychain.Account = .anthropic
+
         func run() throws {
-            print("Anthropic API key: ", terminator: "")
+            print("\(provider.displayName) API key: ", terminator: "")
             // Echoing is fine here — the alternative is fighting termios for a
             // one-shot setup command the user runs alone at a prompt.
             guard let key = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -612,7 +636,7 @@ struct Cleanup: ParsableCommand {
                 print("no key entered")
                 throw ExitCode(1)
             }
-            try Keychain.write(key)
+            try Keychain.write(key, for: provider)
             print("saved to the Keychain")
         }
     }
@@ -620,11 +644,14 @@ struct Cleanup: ParsableCommand {
     struct ClearKey: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "clear-key",
-            abstract: "Remove the stored Anthropic API key."
+            abstract: "Remove a stored provider API key."
         )
 
+        @Argument(help: "Provider whose key to remove (anthropic | openai).")
+        var provider: Keychain.Account = .anthropic
+
         func run() throws {
-            try Keychain.delete()
+            try Keychain.delete(provider)
             print("key removed")
         }
     }

@@ -90,7 +90,7 @@ enum DoctorReport {
                     return Check(
                         name: "cleanup",
                         status: .warn(reason),
-                        remediation: "set provider = \"anthropic\", or disable cleanup"
+                        remediation: "set provider = \"anthropic\" or \"openai\", or disable cleanup"
                     )
                 }
                 return Check(name: "cleanup", status: .ok, remediation: nil)
@@ -98,18 +98,25 @@ enum DoctorReport {
             return Check(
                 name: "cleanup",
                 status: .warn("provider \"apple\" needs macOS 26 or later"),
-                remediation: "set provider = \"anthropic\", or disable cleanup"
+                remediation: "set provider = \"anthropic\" or \"openai\", or disable cleanup"
             )
         case .anthropic:
-            guard Keychain.anthropicAPIKey() != nil else {
-                return Check(
-                    name: "cleanup",
-                    status: .warn("no Anthropic API key"),
-                    remediation: "run `parrot cleanup set-key`, or set ANTHROPIC_API_KEY"
-                )
-            }
-            return Check(name: "cleanup", status: .ok, remediation: nil)
+            return checkAPIKey(.anthropic)
+        case .openai:
+            return checkAPIKey(.openai)
         }
+    }
+
+    private static func checkAPIKey(_ account: Keychain.Account) -> Check {
+        guard Keychain.apiKey(for: account) != nil else {
+            return Check(
+                name: "cleanup",
+                status: .warn("no \(account.displayName) API key"),
+                remediation: "run `parrot cleanup set-key \(account.rawValue)`, "
+                    + "or set \(account.envVar)"
+            )
+        }
+        return Check(name: "cleanup", status: .ok, remediation: nil)
     }
 
     static func checkMicrophone() -> Check {

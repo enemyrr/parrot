@@ -19,7 +19,7 @@ protocol TextCleaner {
 
 enum CleanerError: Error, CustomStringConvertible {
     case unavailable(String)
-    case missingAPIKey
+    case missingAPIKey(Keychain.Account)
     case timedOut
     case badResponse(String)
     case implausibleOutput
@@ -27,8 +27,9 @@ enum CleanerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .unavailable(let why): return why
-        case .missingAPIKey:
-            return "no Anthropic API key — run `parrot cleanup set-key` or set ANTHROPIC_API_KEY"
+        case .missingAPIKey(let account):
+            return "no \(account.displayName) API key — run "
+                + "`parrot cleanup set-key \(account.rawValue)` or set \(account.envVar)"
         case .timedOut: return "cleanup timed out"
         case .badResponse(let detail): return "cleanup failed: \(detail)"
         case .implausibleOutput: return "cleanup returned implausible output; kept the raw transcript"
@@ -127,9 +128,19 @@ func makeCleaner(for config: CleanupConfig) -> Result<TextCleaner, CleanerError>
             return .success(AppleFoundationCleaner(prompt: config.prompt))
         }
         return .failure(.unavailable(
-            "cleanup provider \"apple\" needs macOS 26 or later; set provider = \"anthropic\""
+            "cleanup provider \"apple\" needs macOS 26 or later; "
+                + "set provider = \"anthropic\" or \"openai\""
         ))
     case .anthropic:
-        return .success(AnthropicCleaner(model: config.model, prompt: config.prompt))
+        return .success(AnthropicCleaner(
+            model: config.model.isEmpty ? AnthropicCleaner.defaultModel : config.model,
+            prompt: config.prompt
+        ))
+    case .openai:
+        return .success(OpenAICleaner(
+            model: config.model.isEmpty ? OpenAICleaner.defaultModel : config.model,
+            reasoningEffort: config.reasoningEffort,
+            prompt: config.prompt
+        ))
     }
 }

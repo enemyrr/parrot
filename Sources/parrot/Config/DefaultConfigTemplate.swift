@@ -20,15 +20,20 @@ enum DefaultConfigTemplate {
 
     # Optional pass over the transcript to fix punctuation and drop filler
     # words. "apple" runs on-device (requires macOS 26+) and never leaves the
-    # machine. "anthropic" calls the API — set the key with
-    # `parrot cleanup set-key`, which stores it in the Keychain.
+    # machine. "anthropic" and "openai" call the respective API — store the
+    # key in the Keychain with `parrot cleanup set-key <provider>`.
     [cleanup]
     enabled   = false
-    provider  = "apple"                     # "apple" | "anthropic"
-    model     = "claude-haiku-4-5"          # anthropic only
-    min_words = 4                           # skip cleanup below this
+    provider  = "apple"   # "apple" | "anthropic" | "openai"
+    # Empty = the provider's default (claude-haiku-4-5 / gpt-5-mini).
+    model     = ""
+    # OpenAI reasoning models only: "minimal" | "low" | "medium" | "high".
+    # Empty omits the parameter. Anything above "minimal" trades latency for
+    # quality — mind timeout_s.
+    reasoning_effort = ""
+    min_words = 4         # skip cleanup below this
     timeout_s = 3.0
-    prompt    = ""                          # empty = built-in prompt
+    prompt    = ""        # empty = built-in prompt
 
     [wordlist]
     # Terms the cleanup model is told to preserve exactly as written.

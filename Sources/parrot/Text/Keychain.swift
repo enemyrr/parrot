@@ -1,11 +1,35 @@
 import Foundation
 import Security
 
-/// Generic-password Keychain item for the Anthropic API key. The key never
-/// goes in config.toml — that file is meant to be readable and shareable.
+/// Generic-password Keychain items for cleanup API keys, one per provider.
+/// Keys never go in config.toml — that file is meant to be readable and
+/// shareable.
 enum Keychain {
     private static let service = "com.digimata.parrot"
-    private static let account = "anthropic-api-key"
+
+    /// A provider that needs an API key. Raw value doubles as the CLI
+    /// spelling in `parrot cleanup set-key <provider>`.
+    enum Account: String, CaseIterable {
+        case anthropic
+        case openai
+
+        /// Keychain item name. Predates `openai`, hence the suffix pattern.
+        var item: String { "\(rawValue)-api-key" }
+
+        var envVar: String {
+            switch self {
+            case .anthropic: return "ANTHROPIC_API_KEY"
+            case .openai: return "OPENAI_API_KEY"
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .anthropic: return "Anthropic"
+            case .openai: return "OpenAI"
+            }
+        }
+    }
 
     enum KeychainError: Error, CustomStringConvertible {
         case failed(OSStatus)
@@ -19,18 +43,18 @@ enum Keychain {
         }
     }
 
-    /// Look up the key, falling back to `$ANTHROPIC_API_KEY`.
-    static func anthropicAPIKey() -> String? {
-        if let stored = read(), !stored.isEmpty { return stored }
-        let env = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
+    /// Look up the key, falling back to the provider's environment variable.
+    static func apiKey(for account: Account) -> String? {
+        if let stored = read(account), !stored.isEmpty { return stored }
+        let env = ProcessInfo.processInfo.environment[account.envVar]
         return (env?.isEmpty == false) ? env : nil
     }
 
-    static func read() -> String? {
+    static func read(_ account: Account) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: account.item,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -41,11 +65,11 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ value: String) throws {
+    static func write(_ value: String, for account: Account) throws {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: account.item,
         ]
         let data = Data(value.utf8)
 
@@ -61,11 +85,11 @@ enum Keychain {
         guard status == errSecSuccess else { throw KeychainError.failed(status) }
     }
 
-    static func delete() throws {
+    static func delete(_ account: Account) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: account.item,
         ]
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {

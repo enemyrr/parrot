@@ -21,11 +21,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
     private let recentMenu = NSMenu()
     private let modelLabel: NSMenuItem
+    private let cleanupLabel: NSMenuItem
     private let stateLabel: NSMenuItem
     private let modelID: String
     private let store: TranscriptStore?
 
-    init(modelID: String, store: TranscriptStore?) {
+    init(modelID: String, cleanupStatus: String, cleanupDetail: String?, store: TranscriptStore?) {
         self.modelID = modelID
         self.store = store
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -36,11 +37,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         modelLabel = NSMenuItem(title: "model: \(modelID)", action: nil, keyEquivalent: "")
         modelLabel.isEnabled = false
 
+        cleanupLabel = NSMenuItem(title: "cleanup: \(cleanupStatus)", action: nil, keyEquivalent: "")
+        cleanupLabel.isEnabled = false
+        cleanupLabel.toolTip = cleanupDetail
+
         super.init()
 
         menu.autoenablesItems = false
         menu.addItem(stateLabel)
         menu.addItem(modelLabel)
+        menu.addItem(cleanupLabel)
 
         if store != nil {
             menu.addItem(.separator())

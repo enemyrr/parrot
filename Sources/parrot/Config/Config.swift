@@ -128,13 +128,19 @@ struct LatchConfig: Decodable {
 enum CleanupProvider: String, Decodable {
     case apple
     case anthropic
+    case openai
 }
 
 struct CleanupConfig: Decodable {
     var enabled: Bool
     var provider: CleanupProvider
-    /// Anthropic only; ignored by the on-device provider.
+    /// API providers only; ignored by the on-device provider. Empty means the
+    /// provider's own default so switching providers never sends the wrong
+    /// vendor's model name.
     var model: String
+    /// OpenAI only: "minimal" | "low" | "medium" | "high". Empty means the
+    /// parameter is omitted entirely, so non-reasoning models keep working.
+    var reasoningEffort: String
     /// Below this word count, skip cleanup — the latency isn't worth it.
     var minWords: Int
     var timeoutS: Double
@@ -144,7 +150,8 @@ struct CleanupConfig: Decodable {
     static let `default` = CleanupConfig(
         enabled: false,
         provider: .apple,
-        model: "claude-haiku-4-5",
+        model: "",
+        reasoningEffort: "",
         minWords: 4,
         timeoutS: 3.0,
         prompt: ""
@@ -152,6 +159,7 @@ struct CleanupConfig: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, provider, model, prompt
+        case reasoningEffort = "reasoning_effort"
         case minWords = "min_words"
         case timeoutS = "timeout_s"
     }
@@ -160,6 +168,7 @@ struct CleanupConfig: Decodable {
         enabled: Bool,
         provider: CleanupProvider,
         model: String,
+        reasoningEffort: String,
         minWords: Int,
         timeoutS: Double,
         prompt: String
@@ -167,6 +176,7 @@ struct CleanupConfig: Decodable {
         self.enabled = enabled
         self.provider = provider
         self.model = model
+        self.reasoningEffort = reasoningEffort
         self.minWords = minWords
         self.timeoutS = timeoutS
         self.prompt = prompt
@@ -178,6 +188,8 @@ struct CleanupConfig: Decodable {
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
         provider = try c.decodeIfPresent(CleanupProvider.self, forKey: .provider) ?? d.provider
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
+        reasoningEffort = try c.decodeIfPresent(String.self, forKey: .reasoningEffort)
+            ?? d.reasoningEffort
         minWords = try c.decodeIfPresent(Int.self, forKey: .minWords) ?? d.minWords
         timeoutS = try c.decodeIfPresent(Double.self, forKey: .timeoutS) ?? d.timeoutS
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? d.prompt
