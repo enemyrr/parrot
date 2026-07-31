@@ -183,7 +183,7 @@ final class OverlayModel: ObservableObject {
     /// quiet room still sits near -42 dBFS, well above any fixed floor worth
     /// picking. So the floor tracks the room instead of being guessed, and the
     /// meter spans a fixed dynamic range above it.
-    private static let baseMarginDb: Float = 8
+    private static let baseMarginDb: Float = 11
     /// Only samples within this much of the floor count as room tone and are
     /// allowed to raise it. Anything louder is treated as signal.
     private static let roomBandDb: Float = 6
@@ -212,6 +212,8 @@ final class OverlayModel: ObservableObject {
     /// onto it in well under a second. Seeding it low instead meant crawling up
     /// at the slow rate, with a second of room noise on screen while it did.
     private static let initialFloorDb: Float = -30
+    /// Shapes the gate → ceiling response. >1 compresses the quiet end.
+    private static let responseCurve: Float = 1.5
     /// Below this, snap to true zero — the line has to lie flat when you stop
     /// talking or you can't tell speech from silence.
     private static let gate: Float = 0.02
@@ -265,8 +267,13 @@ final class OverlayModel: ObservableObject {
             Self.maxGateDb
         )
         let ceiling = max(floorDb + Self.minRangeDb, Self.speechCeilingDb)
-        let normalised = (db - floorDb) / (ceiling - floorDb)
-        raw = min(1, max(0, normalised))
+        let normalised = min(1, max(0, (db - floorDb) / (ceiling - floorDb)))
+        // Curved rather than linear. The gap between room noise and speech is
+        // wider than the gap in dB suggests, and a linear map gave a fan or a
+        // chair creak a bar you could read across the room. The exponent leaves
+        // the top of the range nearly untouched (0.8 → 0.72) and flattens the
+        // bottom (0.1 → 0.03), so only the meter's noise end loses travel.
+        raw = pow(normalised, Self.responseCurve)
     }
 
     /// Live meter internals, for `overlay-preview --debug-levels`.
