@@ -11,7 +11,7 @@ struct DictationPipeline {
     let transcriber: Transcriber
     let wordlist: Wordlist
     let cleaner: TextCleaner?
-    let cleanup: CleanupConfig
+    let cleanup: CleanupSettings
     let store: TranscriptStore?
     /// Passed to the cleaner so it doesn't "correct" one of your
     /// languages into another. Display names, not ISO codes.

@@ -2,8 +2,8 @@ import Foundation
 import Security
 
 /// Generic-password Keychain items for cleanup API keys, one per provider.
-/// Keys never go in config.toml — that file is meant to be readable and
-/// shareable.
+/// Keys never go in the settings blob — that is ordinary preferences, readable
+/// by anything running as the user.
 enum Keychain {
     private static let service = "com.digimata.parrot"
 

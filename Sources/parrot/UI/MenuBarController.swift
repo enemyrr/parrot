@@ -1,8 +1,8 @@
 import AppKit
 
 /// Status bar item in the top-right of the menu bar. Shows recording state at
-/// a glance and provides the only persistent control surface for the daemon
-/// (since we run as `.accessory` — no dock icon, no main window).
+/// a glance, and is the way into the settings window — we run as `.accessory`,
+/// so there is no dock icon and no window on launch.
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
     enum State {
@@ -10,6 +10,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         case recording
         case latched
         case transcribing
+    }
+
+    /// What the engine underneath is doing. Separate from `State`, which is
+    /// about the current utterance: a model can still be loading while nothing
+    /// is being recorded, and that is exactly when the user wants to know.
+    enum Engine {
+        case loading
+        case ready
+        case failed
+        case needsPermission
     }
 
     private static let recentCount = 10
@@ -20,44 +30,41 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private let recentMenu = NSMenu()
-    private let modelLabel: NSMenuItem
-    private let cleanupLabel: NSMenuItem
-    private let stateLabel: NSMenuItem
-    private let modelID: String
-    private let store: TranscriptStore?
+    private let recentItem: NSMenuItem
+    private let statusLine: NSMenuItem
 
-    init(modelID: String, cleanupStatus: String, cleanupDetail: String?, store: TranscriptStore?) {
-        self.modelID = modelID
+    private let openSettings: (SettingsPane) -> Void
+    private var store: TranscriptStore?
+    private var engine: Engine = .loading
+    private var state: State = .idle
+
+    init(openSettings: @escaping (SettingsPane) -> Void, store: TranscriptStore?) {
+        self.openSettings = openSettings
         self.store = store
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
-        stateLabel = NSMenuItem(title: "idle · hold fn to dictate", action: nil, keyEquivalent: "")
-        stateLabel.isEnabled = false
+        // One status line, at the top. The model id and the cleanup provider
+        // that used to sit here were read-only restatements of what the
+        // settings window says better; whether parrot is actually working is
+        // the one thing you can't find out anywhere else. Disabled while it's
+        // fine — there is nothing to click — and clickable when it isn't,
+        // because then there is.
+        statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 
-        modelLabel = NSMenuItem(title: "model: \(modelID)", action: nil, keyEquivalent: "")
-        modelLabel.isEnabled = false
-
-        cleanupLabel = NSMenuItem(title: "cleanup: \(cleanupStatus)", action: nil, keyEquivalent: "")
-        cleanupLabel.isEnabled = false
-        cleanupLabel.toolTip = cleanupDetail
+        recentItem = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
 
         super.init()
 
         menu.autoenablesItems = false
-        menu.addItem(stateLabel)
-        menu.addItem(modelLabel)
-        menu.addItem(cleanupLabel)
+        menu.addItem(statusLine)
+        menu.addItem(.separator())
 
-        if store != nil {
-            menu.addItem(.separator())
-            let recentItem = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
-            // Populated on open via menuNeedsUpdate — no need to rebuild the
-            // menu on every transcript, and it can never show stale entries.
-            recentMenu.delegate = self
-            recentMenu.autoenablesItems = false
-            recentItem.submenu = recentMenu
-            menu.addItem(recentItem)
-        }
+        // Populated on open via menuNeedsUpdate — no need to rebuild the menu
+        // on every transcript, and it can never show stale entries.
+        recentMenu.delegate = self
+        recentMenu.autoenablesItems = false
+        recentItem.submenu = recentMenu
+        menu.addItem(recentItem)
 
         menu.addItem(.separator())
 
@@ -69,9 +76,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         settings.target = self
         menu.addItem(settings)
 
-        // Config is read once at startup, so editing it is only half the job.
-        // Offer the other half — but only when launchd can actually bring us
-        // back; from a terminal this would just quit, which isn't a restart.
+        // Settings apply live now, so this is no longer the price of changing
+        // one — it's here for picking up a rebuilt binary. Only offered when
+        // launchd can actually bring us back; from a terminal it would just
+        // quit, which isn't a restart.
         if isManagedByLaunchd {
             let restart = NSMenuItem(
                 title: "Restart parrot",
@@ -84,32 +92,77 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(
-            title: "Quit parrot",
-            action: #selector(quitClicked),
-            keyEquivalent: "q"
-        )
+        let quit = NSMenuItem(title: "Quit parrot", action: #selector(quitClicked), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
         statusItem.menu = menu
         configureButton()
+        setHistoryStore(store)
+        setEngine(.loading)
     }
 
     /// A LaunchAgent-started process is reparented to launchd (pid 1).
     private var isManagedByLaunchd: Bool { getppid() == 1 }
 
+    // MARK: - Updates
+
     func setState(_ state: State) {
-        switch state {
-        case .idle:
-            stateLabel.title = "idle · hold fn to dictate"
-        case .recording:
-            stateLabel.title = "● recording"
-        case .latched:
-            stateLabel.title = "● recording (hands-free · tap fn to stop)"
-        case .transcribing:
-            stateLabel.title = "transcribing…"
-        }
+        self.state = state
+        refreshStatusLine()
+        configureButton()
+    }
+
+    func setEngine(_ engine: Engine) {
+        self.engine = engine
+        refreshStatusLine()
+        configureButton()
+    }
+
+    /// Dot, label, and whether there's anything to do about it.
+    private func refreshStatusLine() {
+        let (color, text, action): (NSColor, String, Selector?) = {
+            switch engine {
+            case .failed:
+                return (.systemRed, "Model didn't load — open Settings", #selector(openModelsClicked))
+            case .needsPermission:
+                return (.systemOrange, "Accessibility not granted — finish setup", #selector(openPermissionsClicked))
+            case .loading:
+                return (.secondaryLabelColor, "Starting up…", nil)
+            case .ready:
+                switch state {
+                case .idle: return (.systemGreen, "Ready", nil)
+                case .recording: return (.systemRed, "Recording", nil)
+                case .latched: return (.systemRed, "Recording — hands-free", nil)
+                case .transcribing: return (.systemBlue, "Transcribing…", nil)
+                }
+            }
+        }()
+
+        // An attributed title so the dot keeps its colour on a disabled item —
+        // a plain title would be drawn in one flat grey, and the colour is
+        // doing as much work here as the word is.
+        let title = NSMutableAttributedString(string: "\u{25CF}  \(text)")
+        title.addAttribute(.foregroundColor, value: color, range: NSRange(location: 0, length: 1))
+        title.addAttribute(
+            .foregroundColor,
+            value: NSColor.labelColor,
+            range: NSRange(location: 1, length: title.length - 1)
+        )
+        title.addAttribute(
+            .font,
+            value: NSFont.menuFont(ofSize: 0),
+            range: NSRange(location: 0, length: title.length)
+        )
+        statusLine.attributedTitle = title
+        statusLine.action = action
+        statusLine.target = action == nil ? nil : self
+        statusLine.isEnabled = action != nil
+    }
+
+    func setHistoryStore(_ store: TranscriptStore?) {
+        self.store = store
+        recentItem.isHidden = store == nil
     }
 
     // MARK: - NSMenuDelegate
@@ -142,22 +195,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let open = NSMenuItem(
-            title: "Open History File",
-            action: #selector(openHistoryClicked),
+        let all = NSMenuItem(
+            title: "Show All…",
+            action: #selector(openHistoryPaneClicked),
             keyEquivalent: ""
         )
-        open.target = self
-        menu.addItem(open)
-
-        let clear = NSMenuItem(
-            title: "Clear History…",
-            action: #selector(clearHistoryClicked),
-            keyEquivalent: ""
-        )
-        clear.target = self
-        clear.isEnabled = !entries.isEmpty
-        menu.addItem(clear)
+        all.target = self
+        menu.addItem(all)
     }
 
     private static func title(for entry: TranscriptEntry) -> String {
@@ -171,35 +215,29 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return "\(time)   \(body)"
     }
 
+    /// The icon carries the state on its own — the menu has to be opened to
+    /// read anything else, and the point of a status item is the glance.
     private func configureButton() {
         guard let button = statusItem.button else { return }
-        let image = Self.birdImage()
-        image?.isTemplate = true
-        button.image = image
-    }
+        button.image = ParrotGlyph.image(size: 16)
 
-    // Inlined Lucide bird SVG. Keeping it in source means the executable has
-    // no separate resource bundle to install alongside it — true single-binary.
-    private static let birdSVG = """
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" \
-    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" \
-    stroke-linecap="round" stroke-linejoin="round">\
-    <path d="M16 7h.01"/>\
-    <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/>\
-    <path d="m20 7 2 .5-2 .5"/>\
-    <path d="M10 18v3"/>\
-    <path d="M14 17.75V21"/>\
-    <path d="M7 18a6 6 0 0 0 3.84-10.61"/>\
-    </svg>
-    """
-
-    private static func birdImage() -> NSImage? {
-        guard let data = birdSVG.data(using: .utf8),
-              let image = NSImage(data: data)
-        else { return nil }
-        // Menu-bar status icons are nominally 18pt tall; size the SVG to match.
-        image.size = NSSize(width: 16, height: 16)
-        return image
+        switch (engine, state) {
+        case (.needsPermission, _), (.failed, _):
+            button.alphaValue = 1
+            button.contentTintColor = .systemOrange
+        case (.loading, _):
+            button.alphaValue = 0.45
+            button.contentTintColor = nil
+        case (_, .recording), (_, .latched):
+            button.alphaValue = 1
+            button.contentTintColor = .controlAccentColor
+        case (_, .transcribing):
+            button.alphaValue = 0.6
+            button.contentTintColor = .controlAccentColor
+        case (_, .idle):
+            button.alphaValue = 1
+            button.contentTintColor = nil
+        }
     }
 
     // MARK: - Actions
@@ -213,59 +251,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// Open `config.toml` in whatever app handles it, creating the commented
-    /// default first — opening a file that isn't there just fails, and a blank
-    /// editor would tell the user nothing about what's configurable.
-    @objc private func openSettingsClicked() {
-        let url = ParrotPaths.configFile
-        if !FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try DefaultConfigTemplate.contents.write(to: url, atomically: true, encoding: .utf8)
-            } catch {
-                FileHandle.standardError.write(Data("couldn't create config: \(error)\n".utf8))
-                return
-            }
-        }
-        // .toml has no guaranteed handler; fall back to revealing it in Finder
-        // so the click always does something.
-        if !NSWorkspace.shared.open(url) {
-            NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
-        }
-    }
+    @objc private func openSettingsClicked() { openSettings(.general) }
+    @objc private func openModelsClicked() { openSettings(.models) }
+    @objc private func openPermissionsClicked() { openSettings(.permissions) }
+    @objc private func openHistoryPaneClicked() { openSettings(.history) }
 
     /// `kickstart -k` rather than terminating: launchd's KeepAlive ignores a
     /// clean exit, so quitting would stop parrot rather than restart it.
     @objc private func restartClicked() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(LaunchAgent.label)"]
-        try? task.run()
+        LaunchAgent.kickstart()
         // launchctl kills this process as part of the restart; nothing to wait for.
-    }
-
-    @objc private func openHistoryClicked() {
-        guard let store else { return }
-        NSWorkspace.shared.selectFile(store.path, inFileViewerRootedAtPath: "")
-    }
-
-    @objc private func clearHistoryClicked() {
-        guard let store else { return }
-        let alert = NSAlert()
-        alert.messageText = "Clear dictation history?"
-        alert.informativeText = "Every transcript in \(store.path) will be deleted. This can't be undone."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Clear")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            try store.clear()
-        } catch {
-            FileHandle.standardError.write(Data("history clear failed: \(error)\n".utf8))
-        }
     }
 
     @objc private func quitClicked() {

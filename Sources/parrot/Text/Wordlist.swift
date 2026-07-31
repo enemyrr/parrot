@@ -18,13 +18,13 @@ struct Wordlist {
     private let values: [String]
     let vocabulary: [String]
 
-    init(config: WordlistConfig) {
-        self.vocabulary = config.vocabulary
+    init(settings: WordlistSettings) {
+        self.vocabulary = settings.vocabulary
 
         // Longest key first: within the alternation the earliest matching
         // branch wins at a given position, so "claude code" must precede
         // "claude". Ties broken alphabetically to keep the order stable.
-        let rules = config.replacements
+        let rules = settings.replacementMap
             .filter { !$0.key.isEmpty }
             .sorted {
                 $0.key.count == $1.key.count ? $0.key < $1.key : $0.key.count > $1.key.count

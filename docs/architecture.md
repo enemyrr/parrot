@@ -2,7 +2,7 @@
 
 ## Goals
 
-1. **CLI executable.** Single binary, launched from the terminal. No dock icon, no settings window.
+1. **CLI executable.** Single binary, launched from the terminal. No dock icon. (Originally "no settings window" too — see *Revisited cuts* below; there is one now, and it is where configuration lives.)
 2. **Push-to-talk, with a hands-free escape hatch.** Hold Fn and release; or double-tap Fn to keep recording without holding.
 3. **Minimal recording feedback.** A small floating pill at the bottom of the screen while recording, so the user knows the mic is hot. Click-through, borderless, hidden when idle.
 4. **Transcription is strictly on-device.** Audio never leaves the machine, on any code path, in any configuration.
@@ -12,7 +12,7 @@
 ## Non-goals
 
 - Cross-platform (macOS only)
-- Settings window, preferences UI, dock icon
+- Dock icon (the daemon runs as an accessory). *Settings window and preferences UI were on this list and are no longer — see* Revisited cuts.
 - **Cloud transcription.** Audio is never uploaded. (Text post-processing is a separate, opt-in thing — see below.)
 - Summarization, agents, chat
 - Speaker diarization, meeting recording, semantic search
@@ -23,7 +23,7 @@ Transcription is on-device, full stop. Text *cleanup* — fixing punctuation and
 
 - It is **off by default**.
 - The default provider is Apple's on-device `FoundationModels`, which is also local.
-- A cloud provider (Anthropic) is available but must be named explicitly in the config, with a key the user stores themselves.
+- A cloud provider (Anthropic or OpenAI) is available but must be chosen explicitly in the Cleanup tab, with a key the user stores themselves.
 
 So the on-device promise holds for audio unconditionally, and for text unless the user opts out of it deliberately. This is a deliberate relaxation of the original "no AI post-processing" non-goal: raw ASR output has no sentence breaks and keeps every "um", and the alternative was making every user fix that by hand.
 
@@ -34,7 +34,7 @@ So the on-device promise holds for audio unconditionally, and for text unless th
 - **Permissions plumbing** (microphone, accessibility) is dramatically smoother in a Swift binary than via Rust crates.
 - **AppKit overlay for free.** The recording indicator (see below) is a borderless `NSWindow` — trivial in Swift, awkward in Rust.
 
-The binary is a Swift Package executable — `swift build`, `swift run`, ship a single binary. Even with the overlay window, there is no `.app` bundle, no menubar entry, no dock icon.
+The binary is a Swift Package executable — `swift build`, `swift run`, ship a single binary. It also bundles as `parrot.app` (`scripts/bundle.sh`) for the DMG; either way it runs as an accessory, with a menu bar item and no dock icon.
 
 ## High-level shape
 
@@ -68,7 +68,7 @@ $ parrot
                                 ║  ┌──────────────────┐   ║
                                 ║  │   TextCleaner    │   ║
                                 ║  │   (protocol)     │   ║
-                                ║  │  Apple │ Anthropic│  ║
+                                ║  │ Apple│Anthropic│OpenAI│ ║
                                 ║  └────────┬─────────┘   ║
                                 ║           ▼             ║
                                 ║      Wordlist           ║
@@ -91,26 +91,34 @@ Argument parsing (via `swift-argument-parser`), config loading, module wiring. C
 
 Subcommands:
 - `parrot` (default) — run the daemon
+- `parrot settings [--pane <name>]` — open the settings window, optionally on a tab
 - `parrot models list` — show registered models, mark which are downloaded
 - `parrot models download <id>` — pre-fetch a model
-- `parrot doctor` — check permissions, Fn mapping, config, and cleanup availability
-- `parrot config path | init` — locate or create the config file
+- `parrot doctor` — permissions, Fn mapping, model and cleanup availability, as text
 - `parrot history [search|clear]` — browse past transcriptions
-- `parrot cleanup set-key | clear-key` — manage the Anthropic key in the Keychain
+- `parrot cleanup set-key | clear-key` — manage a provider key in the Keychain
+
+`parrot settings` runs as a `.regular` app rather than an accessory: it is a window the user opened deliberately, so ⌘Q and the dock should behave normally. The daemon's own copy of the window is the same SwiftUI view with a live `SettingsContext` behind it.
 
 ### `HotkeyMonitor`
 
-Global hotkey via `CGEventTap` (requires Accessibility permission). Default: **Fn**, detected via `flagsChanged` events with `kCGEventFlagMaskSecondaryFn`. Configurable via `--hotkey` flag or config file.
+Global hotkey via `CGEventTap` (requires Accessibility permission). Default: **Fn**, detected via `flagsChanged` events with `kCGEventFlagMaskSecondaryFn`.
 
-Rather than raw key edges, it emits dictation intent — `.begin`, `.latched`, `.end`, `.cancelled` — from a three-state machine (`idle` → `holding` → `latched`):
+The hotkey has two shapes, because push-to-talk has two natural gestures. A **bare modifier** (Fn, Option…) is watched through `flagsChanged` on one flag — nothing is typed while you hold it, which is why it's the default. A **recorded shortcut** (⌃⌥Space, F13) is watched through `keyDown`/`keyUp` on a keycode, with the required modifiers checked only on the way down: releasing ⌃ before Space is a normal way to let go of ⌃Space and must not strand a recording.
 
-- **Release after a real hold** (≥ `tap_ms`) → `.end` immediately. The push-to-talk path keeps its original zero added latency.
-- **Release after a tap** (< `tap_ms`) → wait out `window_ms`. A second press inside that window promotes the recording to `.latched` (hands-free); the timer firing first means it really was just a short press, so `.end`.
+`keyUp` is subscribed **only** for the second shape. For a bare modifier it would double the tap's traffic — for every keystroke the user ever types, in any app — to no purpose. For a key shortcut it's the only way to see the release, so there it's the price of the feature. The same `isPressed` dedupe that filters modifier repeats also swallows auto-repeat, which fires `keyDown` a dozen times a second for exactly as long as push-to-talk holds the key.
+
+A bare *key* is deliberately not representable: the tap is listen-only on purpose — parrot watches the keyboard, it never swallows from it — so holding a plain letter would type a screenful of it into whatever is in front. Anything without a modifier has to be a function key, which produces no character to begin with.
+
+Rather than raw key edges, it emits dictation intent — `.begin`, `.latched`, `.end`, `.cancelled` — from a four-state machine (`idle` → `holding` → `awaitingSecondTap` → `latched`):
+
+- **Release after a real hold** (≥ `latch.tapMs`) → `.end` immediately. The push-to-talk path keeps its original zero added latency.
+- **Release after a tap** (< `latch.tapMs`) → wait out `latch.windowMs`. A second press inside that window promotes the recording to `.latched` (hands-free); the timer firing first means it really was just a short press, so `.end`.
 - **Press while latched** → `.end`. That's the "tap once more to stop" half.
 - **Escape** → `.cancelled`, and the audio is discarded.
-- **`max_seconds` in latched** → `.end`, so a forgotten hands-free session can't record forever.
+- **`latch.maxSeconds` in latched** → `.end`, so a forgotten hands-free session can't record forever.
 
-Only sub-`tap_ms` taps — which are never real utterances — pay the disambiguation wait.
+Only sub-`latch.tapMs` taps — which are never real utterances — pay the disambiguation wait.
 
 **Fn key caveat:** macOS by default maps the Fn (🌐) key to "Show Emoji & Symbols" or "Start Dictation" depending on the user's setting in System Settings → Keyboard → Press 🌐 key to. The CGEventTap sees the keypress regardless, but the system action also fires. `parrot doctor` will detect this setting and instruct the user to change it to "Do Nothing" so Fn becomes a clean modifier.
 
@@ -138,7 +146,7 @@ Adding an engine = one new file conforming to `Transcriber`, plus one registry e
 
 ### `Wordlist`
 
-Literal find → replace from `[wordlist.replacements]`, case-insensitive and word-boundary anchored. All rules compile into **one alternation applied in a single left-to-right pass**, so text a rule emits is never re-examined by another rule — applying rules in sequence instead lets a `"claude"` rule chew through the output of a `"claude code"` rule. Longest key first, so the more specific rule wins at any given position.
+Literal find → replace from the Dictionary tab's replacement rules (`WordlistSettings.replacements`), case-insensitive and word-boundary anchored. All rules compile into **one alternation applied in a single left-to-right pass**, so text a rule emits is never re-examined by another rule — applying rules in sequence instead lets a `"claude"` rule chew through the output of a `"claude code"` rule. Longest key first, so the more specific rule wins at any given position.
 
 Runs on both sides of the cleanup pass: before, so the model sees correct proper nouns; after, so the user's replacements win regardless of what the model did. That's safe because the single-pass design makes it idempotent for any wordlist where a replacement doesn't reintroduce another rule's key.
 
@@ -153,6 +161,7 @@ protocol TextCleaner {
 
 - `AppleFoundationCleaner` — `FoundationModels`, on-device, macOS 26+. The default.
 - `AnthropicCleaner` — Messages API over `URLSession`, key from the Keychain. Opt-in.
+- `OpenAICleaner` — Responses API over `URLSession`, key from the Keychain. Opt-in.
 
 Two guards, because a cleaner sits between the user's voice and their keystrokes:
 
@@ -225,26 +234,46 @@ The list lives in source rather than a JSON resource, so the executable stays se
 
 ### Model downloads
 
-Handled by FluidAudio's `AsrModels.downloadAndLoad`, which fetches from Hugging Face into its own cache on first use. There is no `ModelDownloader` in parrot — `parrot models download <id>` just warms the transcriber and lets FluidAudio do the work.
+Fetching is FluidAudio's (`AsrModels.download` / `downloadAndLoad`, from Hugging Face into its own cache), but the *state* of it is parrot's: `ModelCatalog` is a main-actor `ObservableObject` that knows which models are on disk, how many bytes each takes, and the progress of one being fetched.
 
-### `Config`
+It exists because the download needed a home other than the recording pill. A 460 MB fetch wants a progress bar, a size, a failure with a retry, and a way to reclaim the space — none of which fit in a capsule at the bottom of the screen. The pill has no `.downloading` state any more; the Models tab owns all of it, and `DictationController` opens the window there when the active model is missing at startup.
 
-`Decodable` struct tree loaded from `~/.config/parrot/config.toml` via `TOMLDecoder`. Precedence: CLI flags > config file > defaults.
+`WarmupProgressCurve` still folds FluidAudio's per-sub-operation sawtooth (0→1 once per CoreML model) into a fraction that only climbs — otherwise a download that is working looks like it is looping.
 
-Every field has a default, so a missing file is fine. A file that **exists but doesn't parse is fatal** — silently falling back to defaults would hide a typo'd wordlist or a misspelled provider until the user noticed their dictation behaving oddly.
+### `Settings`
 
-Keys are declared explicitly rather than via a snake_case conversion strategy: `[wordlist.replacements]` is a user-authored dictionary, and automatic key mangling would corrupt any replacement key containing an underscore.
+One `Codable` struct, stored as a single JSON blob in `UserDefaults(suiteName: "com.digimata.parrot")`. It replaced a hand-edited `config.toml`.
 
-Config lives under `$XDG_CONFIG_HOME` (default `~/.config`), data under `$XDG_DATA_HOME` (default `~/.local/share`) — so neither ends up in `~/Library`, and both are easy to point elsewhere in tests.
+One blob under one key, rather than a key per field, buys three things:
+
+- Writes are **atomic** — no reader ever sees half a change.
+- The value is `Equatable`, so `DictationController` can diff old against new and rebuild only what actually changed.
+- Decoding is per-key tolerant (`decodeIfPresent` everywhere), so a blob written by an older build gains new fields' defaults instead of failing to load and silently resetting everything.
+
+An explicit suite, not `UserDefaults.standard`: parrot runs both as a bare binary on `$PATH` and as `parrot.app`, and the standard suite would give those two different preference domains — the same user's settings would appear to vanish depending on how they launched it.
+
+`LegacyConfigMigration` reads an existing `config.toml` once, folds it into `Settings`, and renames the file to `config.toml.migrated`. The rename is what makes it run exactly once. Every section decodes independently: the old loader treated a malformed file as fatal, which was right when it was live configuration, but during a one-shot import a single bad line shouldn't cost the user the other nine sections.
+
+Data still lives under `$XDG_DATA_HOME` (default `~/.local/share`), so transcripts and stats stay out of `~/Library` and are easy to point elsewhere in tests.
+
+### `DictationController`
+
+The running daemon as one main-actor object: transcriber, hotkey monitor, capture, overlay, menu bar, stores, cleaner.
+
+Everything used to be assembled once inside `Run.run()` and then frozen — changing a setting meant editing a file and restarting. Now `SettingsStore.onChange` hands the controller `(old, new)` and it reconfigures only the pieces that differ: a new model reloads the engine, a new hotkey restarts the tap, a new sensitivity just retunes the meter. The `DictationPipeline` is rebuilt per utterance rather than held as a field, because every component it names can be swapped mid-session and a stale pipeline would quietly keep using the old one.
+
+Warm-up is no longer blocking. It used to pump the runloop against a semaphore so the download pill could animate; now the app comes up immediately and the engine's state is reported in the menu bar and in the settings window's status bar.
 
 ## Permissions
 
-Two prompts on first run, both surfaced via `parrot doctor`:
+Two grants, surfaced in the **Permissions** tab and in `parrot doctor`:
 
-1. **Microphone** — standard `AVCaptureDevice` request, fires on first audio engine start.
-2. **Accessibility** — required for `CGEventTap` (hotkey) and `CGEvent` posting (text injection). User toggles in System Settings → Privacy & Security → Accessibility, granting the *terminal* (or whatever launched parrot) permission, since the binary inherits its parent's TCC identity.
+1. **Microphone** — standard `AVCaptureDevice` request, which the pane can trigger directly.
+2. **Accessibility** — required for `CGEventTap` (hotkey) and `CGEvent` posting (text injection). Only System Settings can grant it, so the pane's button opens that pane rather than pretending to fix it.
 
-`parrot doctor` checks both and prints actionable next steps if either is missing. Without these, the daemon refuses to start.
+`DoctorReport` is the single source of truth for both; `Check` carries a `CheckKind` so the UI can attach the right action without matching on message strings. The pane re-runs the checks on a 2s timer — every grant is made in another window, and coming back to a stale ✗ with a Refresh button would be the app pretending it couldn't tell.
+
+Missing Accessibility no longer stops the daemon. It stays up, opens the Permissions tab, and polls `AXIsProcessTrusted()`; the moment the grant lands it registers the tap and starts listening. The old build exited (deliberately, to avoid a crash-loop) and required a manual restart, which was the most confusing thing about first run.
 
 ### TCC quirk worth knowing
 
@@ -266,8 +295,8 @@ Both are Parakeet TDT 0.6B. v3 traded a little English accuracy for 24 extra lan
 ## Data flow, end-to-end
 
 1. User runs `parrot` in a terminal.
-2. `ParrotCLI` loads config, validates permissions (`parrot doctor` logic), warms the model, instantiates modules.
-3. Sets `.accessory` activation policy and enters `NSApp.run()`. Status: `listening`. Overlay hidden.
+2. Any legacy `config.toml` is imported once, then `DictationController` reads `Settings` and instantiates modules. The model warms up in the background rather than blocking startup; if it isn't downloaded, the settings window opens on the Models tab and the fetch starts there.
+3. Sets `.accessory` activation policy and enters `NSApp.run()`. Status: `listening`. Overlay hidden. If Accessibility is missing, the Permissions tab opens instead and the controller polls until the grant lands.
 4. User holds Fn (or double-taps it).
 5. `HotkeyMonitor` fires `.begin`. `RecordingOverlay` shows. Status: `recording`.
 6. `AudioCapture` starts the AVAudioEngine tap. Buffers fill. Overlay animates mic level.
@@ -289,18 +318,18 @@ End-to-end latency target: <500 ms after hotkey release for utterances under 10 
 - No streaming partial transcripts. Press, speak, release, get full text.
 - **No VAD-based** hands-free mode. Double-tap latching gives hands-free dictation with an explicit start and stop, no idle CPU, and no guessing about when you stopped talking.
 - No clipboard manager. History is a log you can read and search, not a stack you paste from.
-- No settings window or preferences panel. UI is the recording overlay plus a menu bar item. Configuration is flags + TOML.
 - No decoder-level vocabulary biasing (yet) — see below.
 
-These are deliberate cuts. Each can be revisited if real usage demands it. Three that already were:
+These are deliberate cuts. Each can be revisited if real usage demands it. Four that already were:
 
 - **Menu bar item** — an `.accessory` process with no window had no way to tell you it was alive, or to surface history.
 - **History** — "output goes to the cursor and that's it" is fine until a transcript lands in the wrong window.
 - **Custom vocabulary and post-processing** — see *On text post-processing* above.
+- **A settings window** — the original cut said "configuration is flags + TOML". That held right up until the things needing configuration stopped being scalars: a 460 MB download wants a progress bar, a permission wants a button that opens the right System Settings pane, and meter sensitivity can only really be judged against your own voice. None of those are expressible in a text file, and the file had also become the only place two of them were even mentioned.
 
 ## Known gap: vocabulary biasing
 
-`[wordlist.vocabulary]` currently only feeds the cleanup prompt as terms to preserve. FluidAudio ships real CTC-based decoder biasing (`CustomVocabularyContext`, per NVIDIA's CTC-WS paper), which would make Parakeet *recognize* a rare proper noun rather than having us correct it afterward.
+The Dictionary tab's vocabulary (`WordlistSettings.vocabulary`) currently only feeds the cleanup prompt as terms to preserve. FluidAudio ships real CTC-based decoder biasing (`CustomVocabularyContext`, per NVIDIA's CTC-WS paper), which would make Parakeet *recognize* a rare proper noun rather than having us correct it afterward.
 
 Not wired up yet because for Parakeet 0.6B it needs a separate ~130 MB CTC encoder and drops throughput from ~120× to ~26× real-time. That's a real cost for a feature the post-hoc wordlist already approximates. Worth revisiting if phonetically-hard names turn out to be a common failure.
 
@@ -313,14 +342,17 @@ parrot/
   Package.swift                 # SPM, single executable target
   Sources/parrot/
     Parrot.swift                # entry point, subcommands, NSApp.run()
-    Doctor.swift
-    Setup.swift
+    Doctor.swift                # checks + the actions that fix them
     Install.swift
 
+    Settings/
+      Settings.swift            # the whole settings value type
+      SettingsStore.swift       # UserDefaults-backed, observable
+      Hotkey.swift              # modifier or recorded shortcut
+      LegacyConfigMigration.swift
+
     Config/
-      Config.swift              # TOML -> Decodable tree
-      DefaultConfigTemplate.swift
-      Paths.swift               # XDG-style config/data locations
+      Paths.swift               # XDG-style data locations
 
     Transcription/              # the inference layer
       Transcriber.swift         # protocol + errors
@@ -332,14 +364,17 @@ parrot/
       TextCleaner.swift         # protocol, prompt, guards, fallback
       AppleFoundationCleaner.swift
       AnthropicCleaner.swift
+      OpenAICleaner.swift
       Keychain.swift
 
     History/
       TranscriptStore.swift     # append-only JSONL
 
-    Models/                     # registry
+    Models/                     # registry + on-disk state
       ModelRegistry.swift
       TranscriptionModel.swift  # Codable types
+      ModelCatalog.swift        # installed? how big? download, delete
+      WarmupProgressCurve.swift
 
     Audio/
       AudioCapture.swift        # AVAudioEngine tap + ring buffer
@@ -348,16 +383,28 @@ parrot/
       HotkeyMonitor.swift       # CGEventTap + latch state machine
       TextInjector.swift        # CGEvent posting
 
+    Daemon/
+      DictationController.swift # owns the runtime, reacts to settings changes
+      DaemonCommands.swift
+      LaunchAgent.swift
+
     UI/
       RecordingOverlay.swift    # borderless NSWindow + SwiftUI pill
       MenuBarController.swift   # NSStatusItem + recent transcripts
+      ParrotGlyph.swift         # the bird, as inline SVG
+      Settings/
+        SettingsWindowController.swift
+        SettingsRootView.swift  # sidebar + detail
+        SettingsComponents.swift
+        ShortcutRecorder.swift
+        Panes/                  # one file per tab
 
   docs/
     architecture.md
   README.md
 ```
 
-No `Resources/` — the model registry and the default config template live in source so the executable ships as a single file with no resource bundle beside it.
+No `Resources/` — the model registry and the bird glyph live in source so the executable ships as a single file with no resource bundle beside it.
 
 Build: `swift build -c release`. Resulting binary at `.build/release/parrot`. Install: copy to `~/.local/bin/` or `/usr/local/bin/`.
 

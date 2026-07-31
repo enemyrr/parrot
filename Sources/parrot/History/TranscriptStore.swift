@@ -21,7 +21,11 @@ final class TranscriptStore {
     private let url: URL
     private let maxEntries: Int
     private let enabled: Bool
-    private let lock = NSLock()
+    /// Shared across instances: the settings window runs inside the daemon and
+    /// builds its own store to clear or prune from, so a per-instance lock
+    /// wouldn't stand between those and an append in flight.
+    private static let lock = NSLock()
+    private var lock: NSLock { Self.lock }
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -35,10 +39,10 @@ final class TranscriptStore {
         return d
     }()
 
-    init(config: HistoryConfig, url: URL = ParrotPaths.historyFile) {
+    init(settings: HistorySettings, url: URL = ParrotPaths.historyFile) {
         self.url = url
-        self.maxEntries = config.maxEntries
-        self.enabled = config.enabled
+        self.maxEntries = settings.maxEntries
+        self.enabled = settings.enabled
     }
 
     func append(_ entry: TranscriptEntry) {

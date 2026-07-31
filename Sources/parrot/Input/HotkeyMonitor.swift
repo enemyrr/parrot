@@ -31,24 +31,6 @@ final class HotkeyMonitor {
         case tapCreateFailed
     }
 
-    /// Modifiers usable as the push-to-talk key.
-    ///
-    /// `CGEventFlags` carries no left/right distinction, so "option" means
-    /// either option key. Telling them apart would mean tracking keycodes
-    /// through `flagsChanged`, which isn't worth it for a hold-to-talk key.
-    static func mask(forHotkey name: String) -> CGEventFlags? {
-        switch name.lowercased() {
-        case "fn", "function", "globe": return .maskSecondaryFn
-        case "option", "alt", "left-option", "right-option": return .maskAlternate
-        case "control", "ctrl": return .maskControl
-        case "command", "cmd": return .maskCommand
-        case "shift": return .maskShift
-        default: return nil
-        }
-    }
-
-    static let supportedHotkeys = "fn, option, control, command, shift"
-
     private enum State {
         case idle
         /// Key is physically down; `since` decides tap vs hold on release.
@@ -60,18 +42,31 @@ final class HotkeyMonitor {
 
     /// Events we ask the tap for.
     ///
-    /// `keyUp` is deliberately absent: the only non-modifier key we care about
-    /// is Escape, and one edge is enough to cancel. Subscribing to it would
-    /// double the number of events the tap hands us — for every keystroke the
-    /// user ever types, in any app — to no purpose.
-    static let eventMask: CGEventMask =
-        (1 << CGEventType.flagsChanged.rawValue)
-        | (1 << CGEventType.keyDown.rawValue)
+    /// For a bare-modifier hotkey, `keyUp` is deliberately absent: the only
+    /// non-modifier key we care about is Escape, and one edge is enough to
+    /// cancel. Subscribing to it would double the number of events the tap
+    /// hands us — for every keystroke the user ever types, in any app — to no
+    /// purpose. A key-based hotkey has no other way to see the release, so
+    /// there it is the price of the feature rather than waste.
+    static func eventMask(for hotkey: Hotkey) -> CGEventMask {
+        var mask: CGEventMask =
+            (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
+        if !hotkey.isBareModifier {
+            mask |= (1 << CGEventType.keyUp.rawValue)
+        }
+        return mask
+    }
 
-    /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
-    private let mask: CGEventFlags
+    var eventMask: CGEventMask { Self.eventMask(for: hotkey) }
+
+    private let hotkey: Hotkey
+    /// Flags of a bare-modifier hotkey. Empty for a key-based one.
+    private let modifierMask: CGEventFlags
+    /// Keycode of a key-based hotkey, as the tap reports it.
+    private let hotkeyCode: Int64?
     private let debug: Bool
-    private let config: LatchConfig
+    private let config: LatchSettings
     var onEvent: ((Event) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -83,10 +78,12 @@ final class HotkeyMonitor {
     /// Backstop so a forgotten hands-free session doesn't record forever.
     private var maxDurationTimer: DispatchSourceTimer?
 
-    private static let escapeKeyCode: Int64 = 53
+    private static let escapeKeyCode = Int64(KeyNames.escape)
 
-    init(mask: CGEventFlags = .maskSecondaryFn, config: LatchConfig = .default, debug: Bool = false) {
-        self.mask = mask
+    init(hotkey: Hotkey = .fn, config: LatchSettings = .default, debug: Bool = false) {
+        self.hotkey = hotkey
+        self.modifierMask = hotkey.isBareModifier ? hotkey.modifiers.cgFlags : []
+        self.hotkeyCode = hotkey.keyCode.map(Int64.init)
         self.config = config
         self.debug = debug
     }
@@ -109,7 +106,7 @@ final class HotkeyMonitor {
                 tap: .cgSessionEventTap,
                 place: .headInsertEventTap,
                 options: .listenOnly,
-                eventsOfInterest: Self.eventMask,
+                eventsOfInterest: eventMask,
                 callback: hotkeyCallback,
                 userInfo: userInfo
             )
@@ -126,6 +123,13 @@ final class HotkeyMonitor {
     }
 
     func stop() {
+        // A session in flight has to be told it's over. The caller stops
+        // listening here — changing the hotkey in settings restarts the
+        // monitor — and without a terminal event the microphone stays open
+        // with nothing left that could ever close it.
+        if case .idle = state {} else {
+            onEvent?(.cancelled)
+        }
         cancelDoubleTapTimer()
         cancelMaxDurationTimer()
         if let tap {
@@ -138,6 +142,16 @@ final class HotkeyMonitor {
         runLoopSource = nil
         onEvent = nil
         state = .idle
+        isPressed = false
+    }
+
+    /// The system disables a tap whose callback was too slow, or that it saw
+    /// the user fight with. It stays disabled until asked otherwise, so without
+    /// this the hotkey is dead for the rest of the process's life.
+    fileprivate func reenableTap() {
+        guard let tap else { return }
+        FileHandle.standardError.write(Data("hotkey tap was disabled — re-enabling\n".utf8))
+        CGEvent.tapEnable(tap: tap, enable: true)
     }
 
     /// Whether an event is worth handing to the state machine.
@@ -149,10 +163,24 @@ final class HotkeyMonitor {
     /// capital letter typed anywhere on the system.
     func wants(type: CGEventType, flags: CGEventFlags, keycode: Int64) -> Bool {
         if debug { return true }
+        guard let hotkeyCode else {
+            // Bare modifier: only the edges of that one flag matter.
+            switch type {
+            case .keyDown: return keycode == Self.escapeKeyCode
+            case .flagsChanged: return flags.contains(modifierMask) != isPressed
+            default: return false
+            }
+        }
         switch type {
-        case .keyDown: return keycode == Self.escapeKeyCode
-        case .flagsChanged: return flags.contains(mask) != isPressed
-        default: return false
+        // `!isPressed` also swallows auto-repeat, which fires keyDown a dozen
+        // times a second for as long as the key is held — exactly the case
+        // push-to-talk puts it in.
+        case .keyDown:
+            return keycode == Self.escapeKeyCode || (keycode == hotkeyCode && !isPressed)
+        case .keyUp:
+            return keycode == hotkeyCode && isPressed
+        default:
+            return false
         }
     }
 
@@ -165,13 +193,35 @@ final class HotkeyMonitor {
                 ))
         }
 
-        if type == .keyDown, keycode == Self.escapeKeyCode {
+        // Escape cancels — unless it *is* the hotkey, in which case pressing it
+        // has to start a recording rather than throw one away.
+        if type == .keyDown, keycode == Self.escapeKeyCode, keycode != hotkeyCode {
             handleEscape()
             return
         }
 
-        guard type == .flagsChanged else { return }
-        let pressed = flags.contains(mask)
+        guard let hotkeyCode else {
+            guard type == .flagsChanged else { return }
+            setPressed(flags.contains(modifierMask))
+            return
+        }
+
+        guard keycode == hotkeyCode else { return }
+        switch type {
+        case .keyDown:
+            // The modifiers have to be down *with* the key. Checked only on the
+            // way down: releasing ⌃ before Space is a normal way to let go of
+            // ⌃Space, and it must not strand a recording.
+            guard HotkeyModifiers(cgFlags: flags).isSuperset(of: hotkey.modifiers) else { return }
+            setPressed(true)
+        case .keyUp:
+            setPressed(false)
+        default:
+            break
+        }
+    }
+
+    private func setPressed(_ pressed: Bool) {
         guard pressed != isPressed else { return }
         isPressed = pressed
         if pressed { handlePress() } else { handleRelease() }
@@ -293,8 +343,9 @@ private func hotkeyCallback(
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
 
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        // System disabled our tap; we'll need to re-enable. For now just no-op
-        // and let the user restart parrot.
+        // Re-enabling has to happen off the callback — the tap is mid-teardown
+        // here — and the source lives on the main runloop either way.
+        DispatchQueue.main.async { monitor.reenableTap() }
         return Unmanaged.passUnretained(event)
     }
 

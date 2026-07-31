@@ -77,7 +77,7 @@ enum LaunchAgent {
     static func install(binary: String) throws {
         let plist: [String: Any] = [
             "Label": label,
-            "ProgramArguments": [binary, "run", "--skip-doctor"],
+            "ProgramArguments": [binary, "run"],
             "RunAtLoad": true,
             // Restart on crash, but respect a clean exit (^C, quit from the
             // menu bar) instead of immediately relaunching.

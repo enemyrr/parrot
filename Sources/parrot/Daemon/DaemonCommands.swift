@@ -31,6 +31,10 @@ enum DaemonLog {
     static func classify(_ text: String) -> Startup {
         for line in text.split(separator: "\n").reversed() {
             if line.hasPrefix("listening on") { return .listening(String(line)) }
+            // Engine loads are repeatable now that the model can be switched
+            // from the settings window, so a warm-up that failed and was then
+            // fixed has to be able to stop being the newest verdict.
+            if line.hasPrefix("model ready:") { return .listening(String(line)) }
             if line.contains("accessibility not granted") { return .accessibilityDenied }
             if line.hasPrefix("warmup failed") || line.hasPrefix("failed to register") {
                 return .failed(String(line))
@@ -60,11 +64,13 @@ enum DaemonLog {
             print("✓ \(line)")
         case .accessibilityDenied:
             print("")
-            print("⚠️  the daemon stopped: accessibility isn't granted for the binary it runs.")
+            print("⚠️  accessibility isn't granted for the binary the daemon runs, so the")
+            print("   hotkey can't be registered yet. parrot is up and waiting for it —")
+            print("   the settings window should have opened on the Permissions tab.")
             print("   System Settings → Privacy & Security → Accessibility → enable parrot.")
             print("   Already listed? Toggle it off and back on — the grant is tied to the")
             print("   binary's contents, so a rebuilt parrot needs re-approving.")
-            print("   Then: parrot restart")
+            print("   No restart needed; parrot starts listening the moment it's granted.")
         case .failed(let line):
             print("")
             print("⚠️  the daemon failed to start: \(line)")
@@ -201,18 +207,18 @@ struct Status: ParsableCommand {
         print("  plist:   \(LaunchAgent.plistURL.path)")
         print("  logs:    \(ParrotPaths.stderrLog.path)")
 
-        if let config = try? Config.load() {
-            let model = config.model ?? ModelRegistry.recommended()?.id ?? "?"
-            let cleanup = config.cleanup.enabled ? config.cleanup.provider.rawValue : "off"
-            print("  model:   \(model)")
-            print("  hotkey:  \(config.hotkey)\(config.latch.enabled ? " (double-tap to latch)" : "")")
-            print("  cleanup: \(cleanup)")
+        let settings = SettingsStore.current()
+        let cleanup = settings.cleanup.enabled ? settings.cleanup.provider.rawValue : "off"
+        let downloaded = settings.resolvedModel.isDownloaded ? "" : "   ⚠️ not downloaded"
+        print("  model:   \(settings.model)\(downloaded)")
+        print("  hotkey:  \(settings.hotkey.displayName)"
+            + "\(settings.latch.enabled ? " (double-tap to latch)" : "")")
+        print("  cleanup: \(cleanup)")
 
-            if config.history.enabled {
-                let store = TranscriptStore(config: config.history)
-                if let last = store.recent(1).first {
-                    print("  last:    \(History.format(last))")
-                }
+        if settings.history.enabled {
+            let store = TranscriptStore(settings: settings.history)
+            if let last = store.recent(1).first {
+                print("  last:    \(History.format(last))")
             }
         }
 

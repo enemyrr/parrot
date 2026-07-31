@@ -28,8 +28,8 @@ enum CleanerError: Error, CustomStringConvertible {
         switch self {
         case .unavailable(let why): return why
         case .missingAPIKey(let account):
-            return "no \(account.displayName) API key — run "
-                + "`parrot cleanup set-key \(account.rawValue)` or set \(account.envVar)"
+            return "no \(account.displayName) API key — add one in the Cleanup tab "
+                + "of `parrot settings`, or set \(account.envVar)"
         case .timedOut: return "cleanup timed out"
         case .badResponse(let detail): return "cleanup failed: \(detail)"
         case .implausibleOutput: return "cleanup returned implausible output; kept the raw transcript"
@@ -121,26 +121,25 @@ func cleanWithFallback(
 
 /// Build the cleaner named in config, or `nil` with a reason if it can't run
 /// on this machine.
-func makeCleaner(for config: CleanupConfig) -> Result<TextCleaner, CleanerError> {
-    switch config.provider {
+func makeCleaner(for settings: CleanupSettings) -> Result<TextCleaner, CleanerError> {
+    switch settings.provider {
     case .apple:
         if #available(macOS 26, *) {
-            return .success(AppleFoundationCleaner(prompt: config.prompt))
+            return .success(AppleFoundationCleaner(prompt: settings.prompt))
         }
         return .failure(.unavailable(
-            "cleanup provider \"apple\" needs macOS 26 or later; "
-                + "set provider = \"anthropic\" or \"openai\""
+            "the Apple cleanup provider needs macOS 26 or later; pick Anthropic or OpenAI"
         ))
     case .anthropic:
         return .success(AnthropicCleaner(
-            model: config.model.isEmpty ? AnthropicCleaner.defaultModel : config.model,
-            prompt: config.prompt
+            model: settings.model.isEmpty ? AnthropicCleaner.defaultModel : settings.model,
+            prompt: settings.prompt
         ))
     case .openai:
         return .success(OpenAICleaner(
-            model: config.model.isEmpty ? OpenAICleaner.defaultModel : config.model,
-            reasoningEffort: config.reasoningEffort,
-            prompt: config.prompt
+            model: settings.model.isEmpty ? OpenAICleaner.defaultModel : settings.model,
+            reasoningEffort: settings.reasoningEffort.rawValue,
+            prompt: settings.prompt
         ))
     }
 }

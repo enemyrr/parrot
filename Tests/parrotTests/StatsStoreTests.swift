@@ -28,9 +28,9 @@ final class StatsStoreTests: XCTestCase {
     }
 
     private func store(enabled: Bool = true) -> StatsStore {
-        var config = StatsConfig.default
-        config.enabled = enabled
-        return StatsStore(config: config, url: url, historyURL: historyURL, timeZone: zone)
+        var settings = StatsSettings.default
+        settings.enabled = enabled
+        return StatsStore(settings: settings, url: url, historyURL: historyURL, timeZone: zone)
     }
 
     /// 2023-11-14T22:13:20Z, plus whole days.

@@ -6,9 +6,10 @@ A minimal macOS dictation daemon. Push-to-talk, on-device transcription, text in
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/enemyrr/parrot/master/scripts/install.sh | sh
-parrot setup    # grants mic + accessibility, downloads the model
 parrot start    # run in the background, now and at every login
 ```
+
+On first launch parrot opens its settings window, downloads the model with a progress bar, and walks you through the two permissions macOS needs. Nothing to configure by hand.
 
 Or grab `parrot.dmg` from [Releases](https://github.com/enemyrr/parrot/releases) and drag it to Applications — signed and notarized, so it just opens.
 
@@ -49,57 +50,38 @@ Press **Escape** while recording to throw the capture away.
 
 That's it. There is no record button, no stop button, no "send" — `fn` is the whole interface.
 
-> **Note:** on most modern Macs the `fn` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to flip it back to plain `fn`.
+> **Note:** on most modern Macs the `fn` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," the Permissions tab will tell you how to flip it back to plain `fn`.
 
-## Config
+## Settings
 
-Everything below is optional — parrot works with no config file at all.
+Everything lives in one window — `parrot settings`, or **Settings…** in the menu bar (`⌘,`).
 
-```sh
-parrot config init    # write a commented default to ~/.config/parrot/config.toml
-parrot config path    # print where that file lives
-```
+| Tab | What's in it |
+|---|---|
+| **General** | The push-to-talk key, hands-free timings, spoken languages, start-at-login |
+| **Models** | Which model, download progress, size on disk, delete |
+| **Cleanup** | Raw vs cleaned, provider, API key, prompt |
+| **Dictionary** | Vocabulary and find → replace rules |
+| **Appearance** | The recording pill's look, with a live microphone preview |
+| **History** | Recent transcripts, usage totals, retention |
+| **Permissions** | Microphone, Accessibility and the Fn key mapping, re-checked live |
 
-```toml
-model  = "parakeet-v3"   # `parrot models list` for options
-hotkey = "fn"            # fn | option | control | command | shift
+**Changes apply immediately** — no restart, no file to edit. Settings are stored in macOS preferences (`com.digimata.parrot`), API keys in the Keychain.
 
-[hotkey_latch]
-enabled     = true
-tap_ms      = 300   # a hold shorter than this counts as a tap
-window_ms   = 300   # the second tap must land within this
-max_seconds = 300   # hands-free recordings stop themselves after this
+Upgrading from a version that used `~/.config/parrot/config.toml`? The first launch imports it and renames it to `config.toml.migrated`. Nothing is lost, and nothing reads it again.
 
-[wordlist]
-# Terms the cleanup model is told to preserve exactly as written.
-vocabulary = ["Vercel", "FluidAudio"]
+### Push to talk
 
-# Literal find -> replace on every transcript. Case-insensitive,
-# word-boundary anchored, multi-word keys allowed.
-[wordlist.replacements]
-"claude code" = "Claude Code"
-"vercell"     = "Vercel"
+Pick a bare modifier — Fn, Option, Control, Command, Shift — and hold it. Or record any shortcut you like (⌃⌥Space, F13) with **Record shortcut**.
 
-[history]
-enabled     = true
-max_entries = 5000
-```
+A recorded shortcut needs a modifier, or has to be a function key. parrot watches the keyboard but never intercepts it, so a bare letter would type itself across the screen while you talked.
 
-A config file that exists but doesn't parse is a hard error rather than a silent fallback — a typo'd wordlist should be loud.
+### Cleanup
 
-## Cleanup (optional)
+An opt-in second pass that fixes punctuation, capitalization and sentence breaks, and drops filler words. Off by default.
 
-An opt-in pass that fixes punctuation, capitalization, and sentence breaks, and drops filler words. Off by default.
-
-```toml
-[cleanup]
-enabled   = true
-provider  = "apple"      # "apple" runs on-device; "anthropic" calls the API
-min_words = 4            # skip cleanup below this — not worth the latency
-timeout_s = 3.0
-```
-
-`provider = "apple"` uses Apple's on-device model (macOS 26+) — no key, no network, nothing leaves the machine. `provider = "anthropic"` calls Claude Haiku; store the key with `parrot cleanup set-key` (it goes in the Keychain, never in the config file).
+- **Apple** runs on-device (macOS 26+) — no key, no network, nothing leaves the machine.
+- **Anthropic** and **OpenAI** call their APIs. Paste the key in the Cleanup tab, or use `parrot cleanup set-key`; either way it goes in the Keychain, never in a settings file. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` work as a fallback.
 
 If cleanup fails, times out, or returns something implausible, parrot injects the raw transcript instead. **Dictation never blocks on a language model.**
 
@@ -114,7 +96,7 @@ parrot history search vercel    # case-insensitive substring search
 parrot history clear            # delete everything
 ```
 
-Set `history.enabled = false` to record nothing. Worth knowing: this captures everything you dictate, including anything you accidentally dictate into a password field.
+Turn **Keep a history** off in the History tab to record nothing. Worth knowing: this captures everything you dictate, including anything you accidentally dictate into a password field.
 
 ## Running it in the background
 
@@ -128,7 +110,7 @@ parrot stop         # stop and unregister
 
 `start` reports whether the daemon actually came up, rather than just claiming success — if it can't register the hotkey, it says so and tells you what to fix.
 
-**Accessibility is tied to the binary's contents**, so a rebuilt parrot needs re-approving in System Settings → Privacy & Security → Accessibility (toggle it off and back on if it's already listed). When permission is missing the daemon exits cleanly instead of crash-looping, so you get one prompt rather than one every ten seconds.
+**Accessibility is tied to the binary's contents**, so a rebuilt parrot needs re-approving in System Settings → Privacy & Security → Accessibility (toggle it off and back on if it's already listed). When permission is missing parrot stays up, opens the Permissions tab, and starts listening the moment the grant lands — no restart, and no crash-loop re-prompting you every ten seconds.
 
 Working on parrot itself? Point the daemon at a dev build and skip `sudo` entirely:
 
@@ -144,19 +126,22 @@ Logs live in `~/Library/Logs/parrot/`.
 
 ```sh
 parrot                           # run in the foreground (^C to quit)
-parrot setup                     # one-time setup: permissions + model download
+parrot settings                  # open the settings window
+parrot settings --pane models    # …on a particular tab
+parrot setup                     # alias for `settings --pane permissions`
 parrot start | stop | restart    # background daemon control
 parrot status | logs             # is it running, and what has it been doing
-parrot doctor                    # check permissions, fn key, config, cleanup
-parrot models list               # list available models
+parrot doctor                    # the Permissions tab, as terminal output
+parrot models list               # list models, and which are downloaded
 parrot models download <id>      # pre-download a model
-parrot config init | path        # create / locate the config file
 parrot history [search|clear]    # browse past transcriptions
-parrot cleanup set-key           # store an Anthropic API key in the Keychain
-parrot --model parakeet-v2       # English-only model, slightly better English WER
-parrot --hotkey option           # change the push-to-talk key
-parrot --no-overlay              # disable the bottom-of-screen pill
+parrot stats                     # how much you've dictated
+parrot cleanup set-key <p>       # store a provider API key in the Keychain
+parrot --no-overlay              # disable the bottom-of-screen pill for this run
+parrot --dump-wav                # write each capture to /tmp/parrot-last.wav
 ```
+
+`parrot doctor` is the one worth keeping in the terminal — it works over ssh, where a settings window doesn't.
 
 `parrot install --launch-at-login` / `--uninstall` still work as aliases for `start` / `stop`.
 
@@ -177,6 +162,7 @@ Both are NVIDIA Parakeet TDT 0.6B, running on the Neural Engine via FluidAudio. 
 - **CGEventTap** — global hotkey
 - **CGEvent** — text injection at cursor
 - **NSWindow** (borderless, click-through) — recording-indicator pill
+- **SwiftUI** — the settings window
 - **FoundationModels** — optional on-device transcript cleanup (macOS 26+)
 
 See [docs/architecture.md](docs/architecture.md) for design notes.

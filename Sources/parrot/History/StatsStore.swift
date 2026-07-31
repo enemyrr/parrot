@@ -47,7 +47,13 @@ final class StatsStore {
     private let historyURL: URL
     private let enabled: Bool
     private let timeZone: TimeZone
-    private let lock = NSLock()
+    /// Shared across instances, not per-instance. `record` is a read-fold-
+    /// rewrite of the whole file, and the settings window — which lives in the
+    /// daemon's own process — builds its own `StatsStore` to reset from. Two
+    /// locks would serialize nothing: a reset landing mid-record would be
+    /// undone by the rewrite that follows it.
+    private static let lock = NSLock()
+    private var lock: NSLock { Self.lock }
 
     private static let encoder = JSONEncoder()
 
@@ -60,14 +66,14 @@ final class StatsStore {
     }()
 
     init(
-        config: StatsConfig,
+        settings: StatsSettings,
         url: URL = ParrotPaths.statsFile,
         historyURL: URL = ParrotPaths.historyFile,
         timeZone: TimeZone = .current
     ) {
         self.url = url
         self.historyURL = historyURL
-        self.enabled = config.enabled
+        self.enabled = settings.enabled
         self.timeZone = timeZone
     }
 

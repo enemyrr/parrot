@@ -7,8 +7,6 @@ import SwiftUI
 final class RecordingOverlay {
     enum State: Equatable {
         case hidden
-        /// First-run model download — the pill doubles as a progress HUD.
-        case downloading
         case recording
         /// Hands-free — same waveform, plus a lock so it's unmistakable.
         case latched
@@ -25,11 +23,6 @@ final class RecordingOverlay {
 
     private var window: NSPanel?
     private let model = OverlayModel()
-    /// Whether the download pill is up. Tracked separately from `model.state`,
-    /// which `show()` sets a runloop turn late — `completeDownload()` can land
-    /// inside that gap, and reading the state there would miss the pill and
-    /// leave it on screen forever.
-    private(set) var downloadPillShown = false
 
     init(style: OverlayStyle = .bars, sensitivity: Double = 1) {
         model.style = style
@@ -87,37 +80,6 @@ final class RecordingOverlay {
             guard model.state == .hidden else { return }
             window?.orderOut(nil)
             model.stopTicking()
-        }
-    }
-
-    /// Drive the pill as a startup progress HUD, showing it if needed.
-    /// `label` is the phase ("downloading parakeet-v3"); the percent is
-    /// rendered from `fraction` so the text and ring can't disagree.
-    func setDownloadProgress(_ fraction: Double, label: String) {
-        // Held just shy of full so the ring-to-checkmark moment belongs to
-        // completeDownload() and can't fire un-animated from a raw callback.
-        model.progress = min(fraction, 0.995)
-        model.progressLabel = label
-        if !downloadPillShown {
-            downloadPillShown = true
-            show(.downloading)
-        }
-    }
-
-    /// The landing: morph ring + percent into checkmark + "Finished", hold
-    /// long enough to actually read it, then play the pill's normal exit.
-    /// Skipping straight to hide() read as the download being cut off rather
-    /// than finishing.
-    func completeDownload() {
-        guard downloadPillShown else { return }
-        downloadPillShown = false
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            model.progress = 1
-            model.progressLabel = "Finished"
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            guard let self, self.model.state == .downloading else { return }
-            self.hide()
         }
     }
 
@@ -233,9 +195,6 @@ final class OverlayModel: ObservableObject {
     /// spinner back to the waveform for the length of the collapse.
     var lastVisible: RecordingOverlay.State = .recording
     @Published var style: OverlayStyle = .bars
-    /// Model download progress, 0…1. Only read in the `.downloading` state.
-    @Published var progress: Double = 0
-    @Published var progressLabel = ""
     /// Oldest sample first, so the newest lands on the right and the row
     /// travels right → left.
     @Published private(set) var history: [Float] = Array(repeating: 0, count: columns)
@@ -372,35 +331,6 @@ struct OverlayPill: View {
         switch isHidden ? model.lastVisible : model.state {
         case .hidden, .recording:
             Waveform(model: model)
-        case .downloading:
-            HStack(spacing: 8) {
-                if model.progress >= 1 {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(OverlayPill.accent)
-                        .frame(width: 14, height: 14)
-                        .transition(.blurReplace)
-                } else {
-                    ProgressRing(progress: model.progress)
-                        .transition(.blurReplace)
-                }
-                // Two distinct views (not one interpolated string) so the
-                // percent → "Finished" swap blur-morphs and the pill width
-                // animates with it.
-                Group {
-                    if model.progress >= 1 {
-                        Text(model.progressLabel)
-                    } else {
-                        Text("\(model.progressLabel) · \(Int((model.progress * 100).rounded()))%")
-                            .monospacedDigit()
-                    }
-                }
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(OverlayPill.accent)
-                .transition(.blurReplace)
-            }
-            .frame(height: Waveform.size.height)
-            .transition(.blurReplace)
         case .latched:
             HStack(spacing: 7) {
                 Waveform(model: model)
@@ -433,29 +363,6 @@ private extension View {
                     Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
                 )
         }
-    }
-}
-
-/// Determinate sibling of `BusySpinner`: same ring, but trimmed to progress
-/// instead of spinning. Starts at a sliver rather than nothing so the pill
-/// never looks stalled at 0%.
-private struct ProgressRing: View {
-    let progress: Double
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(OverlayPill.accent.opacity(0.25), lineWidth: 2)
-            Circle()
-                .trim(from: 0, to: max(0.03, progress))
-                .stroke(
-                    OverlayPill.accent,
-                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
-        .frame(width: 14, height: 14)
-        .animation(.easeOut(duration: 0.25), value: progress)
     }
 }
 

@@ -1,7 +1,12 @@
 import Foundation
 
-/// Where parrot keeps its files. Config under `~/.config`, data under
-/// `~/.local/share` — XDG-style, so neither ends up in the user's Library.
+/// Where parrot keeps its files.
+///
+/// Data lives under `~/.local/share` — XDG-style, so it doesn't end up in the
+/// user's Library and is easy to point elsewhere in tests. Settings themselves
+/// are not here: they are in macOS preferences, and `configDirectory` survives
+/// only because that is where the retired `config.toml` sat and the migrator
+/// still has to go and find it.
 enum ParrotPaths {
     static var configDirectory: URL {
         let base = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
@@ -15,10 +20,6 @@ enum ParrotPaths {
             .map { URL(fileURLWithPath: $0) }
             ?? home.appendingPathComponent(".local/share")
         return base.appendingPathComponent("parrot")
-    }
-
-    static var configFile: URL {
-        configDirectory.appendingPathComponent("config.toml")
     }
 
     static var historyFile: URL {

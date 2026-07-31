@@ -20,9 +20,9 @@ final class TranscriptStoreTests: XCTestCase {
     }
 
     private func store(maxEntries: Int = 5000) -> TranscriptStore {
-        var config = HistoryConfig.default
-        config.maxEntries = maxEntries
-        return TranscriptStore(config: config, url: url)
+        var settings = HistorySettings.default
+        settings.maxEntries = maxEntries
+        return TranscriptStore(settings: settings, url: url)
     }
 
     private func entry(_ text: String, at offset: TimeInterval = 0) -> TranscriptEntry {
@@ -95,9 +95,9 @@ final class TranscriptStoreTests: XCTestCase {
     // MARK: - append / search / prune
 
     func testAppendIsDisabledWhenHistoryIsOff() {
-        var config = HistoryConfig.default
-        config.enabled = false
-        let s = TranscriptStore(config: config, url: url)
+        var settings = HistorySettings.default
+        settings.enabled = false
+        let s = TranscriptStore(settings: settings, url: url)
         s.append(entry("nope"))
         XCTAssertTrue(s.recent(10).isEmpty)
     }

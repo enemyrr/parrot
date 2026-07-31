@@ -1,6 +1,5 @@
 import AppKit
 import ArgumentParser
-import FluidAudio
 import Foundation
 
 @main
@@ -10,23 +9,11 @@ struct Parrot: ParsableCommand {
         abstract: "Minimal macOS dictation daemon. Hold fn to talk, double-tap for hands-free.",
         subcommands: [
             Run.self, Start.self, Stop.self, Restart.self, Status.self, Logs.self,
-            Setup.self, Doctor.self, Models.self, ConfigCommand.self,
+            SettingsCommand.self, Setup.self, Doctor.self, Models.self,
             History.self, Stats.self, Cleanup.self, Install.self, OverlayPreview.self,
         ],
         defaultSubcommand: Run.self
     )
-}
-
-/// Load config or exit with a readable error. A malformed file is fatal on
-/// purpose — silently falling back to defaults would hide a typo'd wordlist
-/// until the user noticed their dictation behaving oddly.
-func loadConfigOrExit() throws -> Config {
-    do {
-        return try Config.load()
-    } catch {
-        FileHandle.standardError.write(Data("\(error)\n".utf8))
-        throw ExitCode(1)
-    }
 }
 
 struct Run: ParsableCommand {
@@ -35,7 +22,11 @@ struct Run: ParsableCommand {
         abstract: "Run the daemon (default)."
     )
 
-    @Flag(name: .long, help: "Skip permission checks at startup.")
+    // Accepted and ignored. Installed LaunchAgent plists written by older
+    // builds pass this, and rejecting it would leave the daemon unable to start
+    // after an upgrade until someone re-ran `parrot start`. Startup no longer
+    // blocks on checks at all — the settings window reports them instead.
+    @Flag(name: .long, help: .hidden)
     var skipDoctor: Bool = false
 
     @Flag(name: .long, help: "Print every keyboard event the tap sees (debug).")
@@ -44,402 +35,142 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Write each capture to /tmp/parrot-last.wav for inspection.")
     var dumpWav: Bool = false
 
-    @Flag(name: .long, help: "Disable the on-screen recording overlay.")
+    @Flag(name: .long, help: "Disable the on-screen recording overlay for this run.")
     var noOverlay: Bool = false
 
-    @Option(name: .long, help: "Model id to use. Overrides the config file.")
-    var model: String?
-
-    @Option(name: .long, help: "Push-to-talk key (\(HotkeyMonitor.supportedHotkeys)).")
-    var hotkey: String?
-
     func run() throws {
-        let config = try loadConfigOrExit()
+        // Before anything reads the store: an existing config.toml is folded in
+        // once, then retired.
+        LegacyConfigMigration.runIfNeeded()
 
-        let hotkeyName = hotkey ?? config.hotkey
-        guard let hotkeyMask = HotkeyMonitor.mask(forHotkey: hotkeyName) else {
-            FileHandle.standardError.write(Data("unknown hotkey: \(hotkeyName)\n".utf8))
-            FileHandle.standardError.write(Data(
-                "supported: \(HotkeyMonitor.supportedHotkeys)\n".utf8
-            ))
-            throw ExitCode(1)
-        }
-
-        if !skipDoctor {
-            let checks = DoctorReport.run(config: config)
-            if !DoctorReport.allOK(checks) {
-                FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
-                DoctorReport.print(checks)
-                FileHandle.standardError.write(Data("\nfix the above or pass --skip-doctor\n".utf8))
-                throw ExitCode(1)
-            }
-        }
-
-        // CLI flag beats config file beats the registry default.
-        let requestedModel = model ?? config.model
-        let chosenModel: TranscriptionModel
-        if let id = requestedModel {
-            guard let m = ModelRegistry.find(id) else {
-                FileHandle.standardError.write(Data("unknown model: \(id)\n".utf8))
-                FileHandle.standardError.write(Data("run `parrot models list` to see options.\n".utf8))
-                throw ExitCode(1)
-            }
-            chosenModel = m
-        } else {
-            guard let m = ModelRegistry.recommended() else {
-                FileHandle.standardError.write(Data("no models registered\n".utf8))
-                throw ExitCode(1)
-            }
-            chosenModel = m
-        }
-
-        // Resolve before warm-up so a bad language code fails immediately
-        // rather than after a model load.
-        var language: Language?
-        switch LanguageSelection.resolve(config.languages) {
-        case .filter(let resolved):
-            language = resolved
-            let script = LanguageSelection.describe(resolved.script)
-            FileHandle.standardError.write(Data(
-                "languages: \(config.languages.joined(separator: ", ")) · restricting output to \(script) script\n".utf8
-            ))
-        case .unrestricted:
-            break
-        case .conflicting(let scripts):
-            // Nothing to enforce — a token can't be two scripts at once.
-            FileHandle.standardError.write(Data("""
-                languages: \(scripts.joined(separator: " + ")) scripts configured together, \
-                so no script filtering is applied.
-                  List languages that share one alphabet to filter out the others.
-
-                """.utf8))
-        case .unknownCodes(let bad):
-            FileHandle.standardError.write(Data(
-                "unknown language code(s): \(bad.joined(separator: ", "))\n".utf8
-            ))
-            FileHandle.standardError.write(Data(
-                "supported: \(LanguageSelection.supportedCodes.joined(separator: " "))\n".utf8
-            ))
-            throw ExitCode(1)
-        }
-
-        // AppKit is initialised before the overlay rather than after warm-up:
-        // the first window creation costs less once NSApp exists, and paying
-        // that cost inside a progress callback used to stall the whole warm-up
-        // pump behind it.
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        // Created before warm-up so a first-run model download (~460 MB) has
-        // somewhere to show progress; reused afterwards for recording states.
-        let overlay: RecordingOverlay? = noOverlay
-            ? nil
-            : MainActor.assumeIsolated {
-                RecordingOverlay(style: config.overlay.style, sensitivity: config.overlay.sensitivity)
-            }
-
-        let hud = MainActor.assumeIsolated {
-            WarmupHUD(overlay: overlay, modelID: chosenModel.id)
-        }
-        let transcriber = ParakeetTranscriber(
-            model: chosenModel,
-            language: language,
-            downloadProgress: { progress in
-                Task { @MainActor in hud.report(progress) }
-            }
-        )
-        let warmupSemaphore = DispatchSemaphore(value: 0)
-        var warmupError: Error?
-        Task.detached {
-            do {
-                try await transcriber.warmUp()
-            } catch {
-                warmupError = error
-            }
-            warmupSemaphore.signal()
-        }
-        // Pump the runloop instead of blocking on the semaphore: the download
-        // pill can't appear — let alone animate — with the main thread parked.
-        while warmupSemaphore.wait(timeout: .now()) == .timedOut {
-            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-        // No-op if the pill never appeared. Latches too, so a progress callback
-        // still queued on the main actor can't put it back up afterwards.
-        MainActor.assumeIsolated { hud.finish() }
-        if let warmupError {
-            FileHandle.standardError.write(Data("warmup failed: \(warmupError)\n".utf8))
-            throw ExitCode(1)
-        }
-
-        let wordlist = Wordlist(config: config.wordlist)
-        let store = config.history.enabled ? TranscriptStore(config: config.history) : nil
-        store?.prune()
-
-        let stats = config.stats.enabled ? StatsStore(config: config.stats) : nil
-        stats?.backfillFromHistoryIfNeeded()
-
-        var cleaner: TextCleaner?
-        var cleanupStatus = "off"
-        var cleanupDetail: String?
-        if config.cleanup.enabled {
-            switch makeCleaner(for: config.cleanup) {
-            case .success(let c):
-                cleaner = c
-                FileHandle.standardError.write(Data("cleanup: \(c.name)\n".utf8))
-                // makeCleaner defers key and model-availability checks to each
-                // request; ask doctor now so the menu doesn't claim a cleaner
-                // that will fail every dictation.
-                let check = DoctorReport.checkCleanup(config)
-                if case .warn(let why) = check.status {
-                    cleanupStatus = "⚠ \(why)"
-                    cleanupDetail = check.remediation
-                } else {
-                    cleanupStatus = c.name
-                }
-            case .failure(let error):
-                // Not fatal — dictation still works, just without cleanup.
-                FileHandle.standardError.write(Data("cleanup disabled — \(error)\n".utf8))
-                cleanupStatus = "⚠ unavailable"
-                cleanupDetail = "\(error)"
-            }
-        }
-
-        let monitor = HotkeyMonitor(mask: hotkeyMask, config: config.latch, debug: debugHotkey)
-        let capture = AudioCapture()
-        let dumpWav = self.dumpWav
-        if let overlay {
-            capture.onLevel = { level in overlay.pushLevel(level) }
-        }
-        let menuBar = MainActor.assumeIsolated {
-            MenuBarController(
-                modelID: chosenModel.id,
-                cleanupStatus: cleanupStatus,
-                cleanupDetail: cleanupDetail,
-                store: store
-            )
-        }
-
-        let pipeline = DictationPipeline(
-            transcriber: transcriber,
-            wordlist: wordlist,
-            cleaner: cleaner,
-            cleanup: config.cleanup,
-            store: store,
-            languages: LanguageSelection.displayNames(config.languages),
-            stats: stats,
-            modelID: chosenModel.id
-        )
-        var isLatched = false
-
-        do {
-            try monitor.start { event in
-                switch event {
-                case .begin:
-                    do {
-                        try capture.start()
-                        isLatched = false
-                        FileHandle.standardError.write(Data("● recording\n".utf8))
-                        MainActor.assumeIsolated {
-                            overlay?.show(.recording)
-                            menuBar.setState(.recording)
-                        }
-                    } catch {
-                        FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
-                    }
-
-                case .latched:
-                    isLatched = true
-                    FileHandle.standardError.write(Data("🔒 hands-free · tap fn to stop\n".utf8))
-                    MainActor.assumeIsolated {
-                        overlay?.show(.latched)
-                        menuBar.setState(.latched)
-                    }
-
-                case .cancelled:
-                    _ = capture.stop()
-                    isLatched = false
-                    FileHandle.standardError.write(Data("✗ cancelled\n".utf8))
-                    MainActor.assumeIsolated {
-                        overlay?.hide()
-                        menuBar.setState(.idle)
-                    }
-
-                case .end:
-                    let samples = capture.stop()
-                    let wasLatched = isLatched
-                    isLatched = false
-                    MainActor.assumeIsolated {
-                        overlay?.show(.transcribing)
-                        menuBar.setState(.transcribing)
-                    }
-                    let seconds = Double(samples.count) / AudioCapture.targetSampleRate
-                    let rms = computeRMS(samples)
-                    FileHandle.standardError.write(Data(
-                        String(format: "○ captured %.2fs · rms %.3f\n", seconds, rms).utf8
-                    ))
-                    if dumpWav, !samples.isEmpty {
-                        let path = "/tmp/parrot-last.wav"
-                        do {
-                            try WAVWriter.write(samples: samples, sampleRate: 16_000, to: path)
-                            FileHandle.standardError.write(Data("  wrote \(path)\n".utf8))
-                        } catch {
-                            FileHandle.standardError.write(Data("  wav write failed: \(error)\n".utf8))
-                        }
-                    }
-                    guard !samples.isEmpty else {
-                        MainActor.assumeIsolated {
-                            overlay?.hide()
-                            menuBar.setState(.idle)
-                        }
-                        return
-                    }
-                    Task {
-                        let text = await pipeline.process(
-                            samples: samples,
-                            seconds: seconds,
-                            latched: wasLatched
-                        )
-                        await MainActor.run {
-                            if let text, !text.isEmpty {
-                                TextInjector.inject(text)
-                            }
-                            overlay?.hide()
-                            menuBar.setState(.idle)
-                        }
-                    }
-                }
-            }
-        } catch HotkeyMonitor.HotkeyError.accessibilityDenied {
-            let remediation = DoctorReport.checkAccessibility().remediation ?? "run `parrot doctor`"
-            FileHandle.standardError.write(Data("""
-                accessibility not granted — the hotkey can't be registered.
-                \(remediation)
-                Then run `parrot restart` (or relaunch parrot).
-
-                """.utf8))
-            // Exit 0 deliberately. The LaunchAgent restarts on *failure*, and
-            // retrying here would crash-loop, re-prompting for permission every
-            // few seconds until someone grants it. This needs a human, so stop
-            // cleanly and wait to be restarted.
-            throw ExitCode(0)
-        } catch {
-            FileHandle.standardError.write(Data("failed to register hotkey tap: \(error)\n".utf8))
-            FileHandle.standardError.write(Data("run `parrot setup` to configure permissions.\n".utf8))
-            throw ExitCode(1)
+        let controller = MainActor.assumeIsolated { DictationController() }
+        MainActor.assumeIsolated {
+            controller.debugHotkey = debugHotkey
+            controller.dumpWav = dumpWav
+            controller.overlaySuppressed = noOverlay
+            controller.start()
         }
 
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigint.setEventHandler {
             FileHandle.standardError.write(Data("\nshutting down\n".utf8))
-            monitor.stop()
+            MainActor.assumeIsolated { controller.stop() }
             NSApp.terminate(nil)
         }
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        let latchHint = config.latch.enabled ? " · double-tap for hands-free" : ""
-        FileHandle.standardError.write(Data(
-            "listening on \(hotkeyName) hold\(latchHint) · model: \(chosenModel.id) · ^C to quit\n".utf8
-        ))
+        FileHandle.standardError.write(Data("parrot running · ^C to quit\n".utf8))
         app.run()
     }
 }
 
-/// Turns FluidAudio's raw warm-up progress into the startup pill, plus a
-/// coarse stderr trail — the pill is absent under --no-overlay and invisible
-/// over ssh, but `parrot logs -f` is not.
+/// Opens the settings window on its own, with no daemon behind it.
 ///
-/// Two things need handling. FluidAudio reports per sub-operation — a separate
-/// reporter per CoreML model — so the raw fraction sawtooths 0→1 once per
-/// model, four times on a cached start; fed straight to the ring, a warm-up
-/// that is working looks like it is looping. And the callbacks hop to the main
-/// actor, so the last of them can land after warm-up has already returned,
-/// which is why finishing latches.
-@MainActor
-final class WarmupHUD {
-    private let overlay: RecordingOverlay?
-    private let modelID: String
-    private var curve = WarmupProgressCurve()
-    private var lastDecile = -1
-    private var finished = false
+/// Every pane still reads and writes settings; the ones that need a live engine
+/// — the model's load state, the microphone preview — say so rather than
+/// pretending. Runs as a regular app so ⌘Q and the dock behave normally, unlike
+/// the accessory-mode daemon.
+struct SettingsCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "settings",
+        abstract: "Open the settings window."
+    )
 
-    init(overlay: RecordingOverlay?, modelID: String) {
-        self.overlay = overlay
-        self.modelID = modelID
+    @Option(name: .long, help: "Pane to open on: \(SettingsCommand.paneList).")
+    var pane: String?
+
+    static var paneList: String {
+        SettingsPane.allCases.map(\.rawValue).joined(separator: " | ")
     }
 
-    func report(_ progress: DownloadProgress) {
-        // A callback that lost the race with finish() must not raise the pill
-        // again: warm-up is over, so nothing is left to take it back down.
-        guard !finished else { return }
+    func run() throws {
+        LegacyConfigMigration.runIfNeeded()
 
-        let fraction = curve.advance(to: progress.fractionCompleted)
-
-        let verb: String
-        switch progress.phase {
-        case .listing:
-            verb = "preparing"
-        // A cached start reports nothing to fetch. Calling that "downloading"
-        // is a lie the user would read on every single launch.
-        case .downloading(_, let totalFiles):
-            verb = totalFiles == 0 ? "loading" : "downloading"
-        case .compiling:
-            verb = "compiling"
+        let requested: SettingsPane
+        if let pane {
+            guard let match = SettingsPane(rawValue: pane.lowercased()) else {
+                throw ValidationError("Unknown pane '\(pane)'. Use one of: \(Self.paneList).")
+            }
+            requested = match
+        } else {
+            requested = .general
         }
 
-        overlay?.setDownloadProgress(fraction, label: "\(verb) \(modelID)")
+        // The daemon owns the real window, with a live engine behind it, and
+        // there is no channel to ask it to come forward — so this opens a
+        // second, inert copy. Say so: changes made here are written to the same
+        // preferences, but the running daemon read those at launch and won't
+        // see them until it restarts.
+        if LaunchAgent.state().isRunning {
+            print("parrot is already running. This window edits the same settings, but the")
+            print("running daemon won't pick them up until `parrot restart`.")
+            print("Its own settings window is under the menu bar icon.")
+        }
 
-        let decile = Int(fraction * 10)
-        guard decile != lastDecile else { return }
-        lastDecile = decile
-        FileHandle.standardError.write(Data(
-            "\(verb) \(modelID)… \(Int(fraction * 100))%\n".utf8
-        ))
-    }
-
-    /// Warm-up is done: land the pill and stop accepting progress.
-    func finish() {
-        finished = true
-        // A no-op if the pill never went up.
-        overlay?.completeDownload()
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        let delegate = MainActor.assumeIsolated { StandaloneSettingsDelegate(pane: requested) }
+        app.delegate = delegate
+        app.run()
     }
 }
 
-/// Folds a sawtooth of per-sub-operation fractions into one that only climbs.
-///
-/// Each sub-operation is given half of whatever progress is left — 0→50%,
-/// 50→75%, 75→87.5% — so the curve needs no advance knowledge of how many are
-/// coming, never regresses, and never reaches 100% on its own. The caller owns
-/// the landing on 1.0.
-struct WarmupProgressCurve {
-    private var segmentStart: Double = 0
-    private var segmentSpan: Double = 0.5
-    private var lastRaw: Double = 0
+/// Keeps the standalone window alive and quits with it.
+@MainActor
+final class StandaloneSettingsDelegate: NSObject, NSApplicationDelegate {
+    private let pane: SettingsPane
 
-    /// Feed the next raw fraction; a value below the previous one is read as
-    /// "a new sub-operation started".
-    mutating func advance(to raw: Double) -> Double {
-        if raw < lastRaw {
-            segmentStart += segmentSpan
-            segmentSpan /= 2
-        }
-        lastRaw = raw
-        return segmentStart + segmentSpan * min(max(raw, 0), 1)
+    init(pane: SettingsPane) {
+        self.pane = pane
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        SettingsWindowController.shared.show(pane: pane)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
+
+/// First-run setup, which now lives in the settings window. Kept as a command
+/// because the install script and a lot of muscle memory point at it.
+struct Setup: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Open the permissions checklist."
+    )
+
+    func run() throws {
+        var settings = SettingsCommand()
+        settings.pane = SettingsPane.permissions.rawValue
+        try settings.run()
     }
 }
 
 struct Doctor: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Check microphone, accessibility, Fn key, and config."
+        abstract: "Check microphone, accessibility, Fn key, model and cleanup."
     )
 
     func run() throws {
-        // Report a bad config as a failed check rather than exiting early —
-        // doctor's whole job is to tell you what's wrong.
-        let config = try? Config.load()
-        let checks = DoctorReport.run(config: config)
+        let checks = DoctorReport.run(settings: SettingsStore.current())
         DoctorReport.print(checks)
         if !DoctorReport.allOK(checks) {
+            print("")
+            // Only point at the Permissions pane when that's where the failure
+            // actually is — an unknown language code can't be fixed there, and
+            // sending someone to a pane with no control for their problem is
+            // worse than not naming a pane at all.
+            let failed = checks.filter { if case .fail = $0.status { return true } else { return false } }
+            let permissionsOnly = failed.allSatisfy { DoctorReport.requiredKinds.contains($0.kind) }
+            print(permissionsOnly
+                ? "Fix these in the settings window: parrot settings --pane permissions"
+                : "Fix these in the settings window: parrot settings")
             throw ExitCode(1)
         }
     }
@@ -453,13 +184,15 @@ struct Models: ParsableCommand {
 
     struct List: ParsableCommand {
         func run() throws {
+            let active = SettingsStore.current().resolvedModel.id
             for m in ModelRegistry.shared {
-                let star = m.recommended ? "★" : " "
+                let marker = m.id == active ? "●" : (m.recommended ? "★" : " ")
                 let id = m.id.padding(toLength: 26, withPad: " ", startingAt: 0)
                 let langs = "[\(m.languages.joined(separator: ","))]"
                     .padding(toLength: 9, withPad: " ", startingAt: 0)
                 let size = String(format: "%5d MB", m.sizeMB)
-                print("\(star) \(id) \(size)  \(langs)  \(m.displayName)")
+                let state = m.isDownloaded ? "downloaded" : "not downloaded"
+                print("\(marker) \(id) \(size)  \(langs)  \(m.displayName)  · \(state)")
             }
         }
     }
@@ -472,55 +205,16 @@ struct Models: ParsableCommand {
                 print("unknown model: \(id)")
                 throw ExitCode(1)
             }
-            let t = ParakeetTranscriber(model: m)
+            let transcriber = ParakeetTranscriber(model: m)
 
-            let sem = DispatchSemaphore(value: 0)
+            let semaphore = DispatchSemaphore(value: 0)
             var capturedError: Error?
             Task.detached {
-                do { try await t.warmUp() } catch { capturedError = error }
-                sem.signal()
+                do { try await transcriber.warmUp() } catch { capturedError = error }
+                semaphore.signal()
             }
-            sem.wait()
-            if let e = capturedError { throw e }
-        }
-    }
-}
-
-struct ConfigCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "config",
-        abstract: "Show or create the config file.",
-        subcommands: [Path.self, Init.self]
-    )
-
-    struct Path: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Print the config file path.")
-        func run() throws {
-            print(ParrotPaths.configFile.path)
-        }
-    }
-
-    struct Init: ParsableCommand {
-        static let configuration = CommandConfiguration(
-            abstract: "Write a commented default config file."
-        )
-
-        @Flag(name: .long, help: "Overwrite an existing config file.")
-        var force: Bool = false
-
-        func run() throws {
-            let url = ParrotPaths.configFile
-            if FileManager.default.fileExists(atPath: url.path), !force {
-                print("config already exists at \(url.path)")
-                print("pass --force to overwrite it.")
-                throw ExitCode(1)
-            }
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try DefaultConfigTemplate.contents.write(to: url, atomically: true, encoding: .utf8)
-            print("wrote \(url.path)")
+            semaphore.wait()
+            if let capturedError { throw capturedError }
         }
     }
 }
@@ -544,8 +238,7 @@ struct History: ParsableCommand {
         var number: Int = 20
 
         func run() throws {
-            let config = try loadConfigOrExit()
-            let store = TranscriptStore(config: config.history)
+            let store = TranscriptStore(settings: SettingsStore.current().history)
             let entries = store.recent(number)
             guard !entries.isEmpty else {
                 print("no history yet — \(store.path)")
@@ -577,8 +270,7 @@ struct History: ParsableCommand {
         var number: Int = 20
 
         func run() throws {
-            let config = try loadConfigOrExit()
-            let store = TranscriptStore(config: config.history)
+            let store = TranscriptStore(settings: SettingsStore.current().history)
             let matches = store.search(query, limit: number)
             guard !matches.isEmpty else {
                 print("no matches for \"\(query)\"")
@@ -597,8 +289,7 @@ struct History: ParsableCommand {
         var yes: Bool = false
 
         func run() throws {
-            let config = try loadConfigOrExit()
-            let store = TranscriptStore(config: config.history)
+            let store = TranscriptStore(settings: SettingsStore.current().history)
             if !yes {
                 print("Delete every transcript in \(store.path)? [y/N] ", terminator: "")
                 let answer = readLine()?.lowercased() ?? ""
@@ -627,14 +318,14 @@ struct Stats: ParsableCommand {
         var days: Int = 30
 
         func run() throws {
-            let config = try loadConfigOrExit()
-            let store = StatsStore(config: config.stats)
-            let summary = store.summary(typingWpm: config.stats.typingWpm)
+            let settings = SettingsStore.current()
+            let store = StatsStore(settings: settings.stats)
+            let summary = store.summary(typingWpm: settings.stats.typingWpm)
 
             guard summary.sessions > 0 else {
-                print(config.stats.enabled
+                print(settings.stats.enabled
                     ? "nothing dictated yet — \(store.path)"
-                    : "stats are disabled in \(ParrotPaths.configFile.path)")
+                    : "usage counting is off — turn it on in `parrot settings`")
                 return
             }
 
@@ -642,7 +333,7 @@ struct Stats: ParsableCommand {
             print("")
             print("  \(summary.words.formatted()) words  ·  \(summary.daysUsed) \(dayLabel) used")
             print("  \(Stats.duration(summary.secondsSaved)) saved"
-                + "  ·  vs typing at \(Int(config.stats.typingWpm)) wpm")
+                + "  ·  vs typing at \(Int(settings.stats.typingWpm)) wpm")
             print("  \(Int(summary.averageWpm.rounded())) wpm speaking"
                 + "  ·  \(summary.sessions.formatted()) recordings"
                 + "  ·  \(Int((summary.latchedShare * 100).rounded()))% hands-free")
@@ -675,8 +366,7 @@ struct Stats: ParsableCommand {
         var yes: Bool = false
 
         func run() throws {
-            let config = try loadConfigOrExit()
-            let store = StatsStore(config: config.stats)
+            let store = StatsStore(settings: SettingsStore.current().stats)
             if !yes {
                 print("Delete every usage total in \(store.path)? [y/N] ", terminator: "")
                 let answer = readLine()?.lowercased() ?? ""

@@ -1,6 +1,23 @@
 import Foundation
 import FoundationModels
 
+/// Whether the on-device provider can run here, with the OS version folded in.
+///
+/// Ungated so the settings pane and the doctor can ask the same question and
+/// get the same answer — they used to restate the `#available` check and the
+/// wording of its failure separately, in three places, and had already drifted.
+enum AppleCleanupAvailability {
+    /// Nil when it will work; otherwise why it won't, as a sentence fragment.
+    static var unavailableReason: String? {
+        if #available(macOS 26, *) {
+            return AppleFoundationCleaner.unavailableReason
+        }
+        return "the Apple provider needs macOS 26 or later"
+    }
+
+    static var isAvailable: Bool { unavailableReason == nil }
+}
+
 /// Cleanup via Apple's on-device model. No API key, no network, no cost — the
 /// transcript never leaves the machine, which is why this is the default.
 @available(macOS 26, *)
