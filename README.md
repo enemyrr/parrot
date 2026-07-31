@@ -10,9 +10,31 @@ parrot setup    # grants mic + accessibility, downloads the model
 parrot start    # run in the background, now and at every login
 ```
 
+Or grab `parrot.dmg` from [Releases](https://github.com/enemyrr/parrot/releases) and drag it to Applications — signed and notarized, so it just opens.
+
 **Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
 
-The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned for now, so the installer strips the quarantine xattr — once you've inspected the script you'll see exactly what it does.
+The script install drops the binary in `/usr/local/bin/parrot`. The `.app` bundles the same binary at `parrot.app/Contents/MacOS/parrot`, so every CLI command works either way.
+
+## Build the app bundle
+
+```sh
+./scripts/bundle.sh              # ad-hoc signed, for local testing
+./scripts/bundle.sh --notarize   # Developer ID + notarize + staple
+```
+
+Produces `dist/parrot.app` and a drag-to-install `dist/parrot-<version>.dmg` — styled window, app on the left, Applications on the right, arrow between them.
+
+Both the app icon and the DMG background are rendered at build time from the same bird glyph the menu bar uses (`scripts/make-icon.swift`, `scripts/make-dmg-background.swift`), so there's no binary asset in the repo. Drop a real `.icns` in later to replace it.
+
+Signing picks up a "Developer ID Application" cert automatically; set `SIGN_IDENTITY` to pin a specific one. Notarizing needs credentials stored once:
+
+```sh
+xcrun notarytool store-credentials parrot \
+  --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+```
+
+Only a notarized build opens on someone else's Mac without Gatekeeper blocking it. The app icon is generated from the same bird glyph as the menu bar (`scripts/make-icon.swift`), so there's no binary asset in the repo.
 
 ## How to use
 

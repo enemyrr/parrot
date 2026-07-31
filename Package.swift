@@ -18,5 +18,9 @@ let package = Package(
                 .product(name: "TOMLDecoder", package: "TOMLDecoder"),
             ]
         ),
+        .testTarget(
+            name: "parrotTests",
+            dependencies: ["parrot"]
+        ),
     ]
 )

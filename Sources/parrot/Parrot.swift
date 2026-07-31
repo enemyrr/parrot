@@ -10,7 +10,7 @@ struct Parrot: ParsableCommand {
         subcommands: [
             Run.self, Start.self, Stop.self, Restart.self, Status.self, Logs.self,
             Setup.self, Doctor.self, Models.self, ConfigCommand.self,
-            History.self, Cleanup.self, Install.self,
+            History.self, Stats.self, Cleanup.self, Install.self, OverlayPreview.self,
         ],
         defaultSubcommand: Run.self
     )
@@ -113,6 +113,9 @@ struct Run: ParsableCommand {
         let store = config.history.enabled ? TranscriptStore(config: config.history) : nil
         store?.prune()
 
+        let stats = config.stats.enabled ? StatsStore(config: config.stats) : nil
+        stats?.backfillFromHistoryIfNeeded()
+
         var cleaner: TextCleaner?
         if config.cleanup.enabled {
             switch makeCleaner(for: config.cleanup) {
@@ -131,7 +134,11 @@ struct Run: ParsableCommand {
         let monitor = HotkeyMonitor(mask: hotkeyMask, config: config.latch, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
-        let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
+        let overlay: RecordingOverlay? = noOverlay
+            ? nil
+            : MainActor.assumeIsolated {
+                RecordingOverlay(style: config.overlay.style, sensitivity: config.overlay.sensitivity)
+            }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
@@ -145,6 +152,7 @@ struct Run: ParsableCommand {
             cleaner: cleaner,
             cleanup: config.cleanup,
             store: store,
+            stats: stats,
             modelID: chosenModel.id
         )
         var isLatched = false
@@ -445,6 +453,108 @@ struct History: ParsableCommand {
             try store.clear()
             print("history cleared")
         }
+    }
+}
+
+struct Stats: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "How much you've dictated.",
+        subcommands: [Show.self, Reset.self],
+        defaultSubcommand: Show.self
+    )
+
+    struct Show: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Show usage totals.")
+
+        @Option(name: .shortAndLong, help: "Days to include in the sparkline.")
+        var days: Int = 30
+
+        func run() throws {
+            let config = try loadConfigOrExit()
+            let store = StatsStore(config: config.stats)
+            let summary = store.summary(typingWpm: config.stats.typingWpm)
+
+            guard summary.sessions > 0 else {
+                print(config.stats.enabled
+                    ? "nothing dictated yet — \(store.path)"
+                    : "stats are disabled in \(ParrotPaths.configFile.path)")
+                return
+            }
+
+            let dayLabel = summary.daysUsed == 1 ? "day" : "days"
+            print("")
+            print("  \(summary.words.formatted()) words  ·  \(summary.daysUsed) \(dayLabel) used")
+            print("  \(Stats.duration(summary.secondsSaved)) saved"
+                + "  ·  vs typing at \(Int(config.stats.typingWpm)) wpm")
+            print("  \(Int(summary.averageWpm.rounded())) wpm speaking"
+                + "  ·  \(summary.sessions.formatted()) recordings"
+                + "  ·  \(Int((summary.latchedShare * 100).rounded()))% hands-free")
+
+            let points = store.daily(lastDays: days)
+            if points.contains(where: { $0.words > 0 }) {
+                print("")
+                print("  last \(points.count) days")
+                print("  \(Stats.sparkline(points.map(\.words)))")
+            }
+
+            if !summary.models.isEmpty {
+                print("")
+                let width = summary.models.map(\.model.count).max() ?? 0
+                for model in summary.models {
+                    let name = model.model.padding(toLength: width, withPad: " ", startingAt: 0)
+                    let latency = model.averageProcessSeconds
+                        .map { String(format: " · %.2fs avg", $0) } ?? ""
+                    print("  \(name)  \(model.words.formatted()) words\(latency)")
+                }
+            }
+            print("")
+        }
+    }
+
+    struct Reset: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Delete all usage stats.")
+
+        @Flag(name: .long, help: "Skip the confirmation prompt.")
+        var yes: Bool = false
+
+        func run() throws {
+            let config = try loadConfigOrExit()
+            let store = StatsStore(config: config.stats)
+            if !yes {
+                print("Delete every usage total in \(store.path)? [y/N] ", terminator: "")
+                let answer = readLine()?.lowercased() ?? ""
+                guard answer == "y" || answer == "yes" else {
+                    print("cancelled")
+                    return
+                }
+            }
+            try store.reset()
+            print("stats cleared")
+        }
+    }
+
+    /// Rounded to whatever unit reads cleanly — "saved 2847 seconds" is a
+    /// number, "47 min" is an answer.
+    static func duration(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 { return "\(total)s" }
+        let minutes = total / 60
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
+    }
+
+    static func sparkline(_ values: [Int]) -> String {
+        let blocks = Array("▁▂▃▄▅▆▇█")
+        guard let peak = values.max(), peak > 0 else { return "" }
+        return String(values.map { value -> Character in
+            guard value > 0 else { return "·" }
+            // Scaled so the busiest day is full height and any day with words
+            // in it clears the floor — a one-word day shouldn't read as zero.
+            let level = Int((Double(value) / Double(peak) * Double(blocks.count - 1)).rounded())
+            return blocks[min(blocks.count - 1, max(0, level))]
+        })
     }
 }
 

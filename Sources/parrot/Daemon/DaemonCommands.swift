@@ -106,8 +106,10 @@ struct Start: ParsableCommand {
 
         print(alreadyRunning ? "restarting parrot…" : "starting parrot…")
         print("  binary: \(path)")
-        if path != LaunchAgent.installedBinary {
-            print("  note:   non-standard binary — run `parrot restart` after each rebuild")
+        // Only warn for a genuinely ad-hoc path — an installed app or the CLI
+        // copy are both normal.
+        if path != LaunchAgent.installedBinary && path != LaunchAgent.bundledBinary {
+            print("  note:   running from a build directory — `parrot restart` after each rebuild")
         }
         DaemonLog.report(DaemonLog.waitForStartup(since: offset))
         print("  logs:   parrot logs -f")

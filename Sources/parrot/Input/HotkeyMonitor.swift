@@ -13,7 +13,7 @@ import Foundation
 /// Requires Accessibility permission. If the tap fails to register, callers
 /// will see an error from `start()`.
 final class HotkeyMonitor {
-    enum Event {
+    enum Event: Equatable {
         /// Start capturing.
         case begin
         /// Still capturing, now hands-free — no need to keep holding.
@@ -58,11 +58,21 @@ final class HotkeyMonitor {
         case latched
     }
 
+    /// Events we ask the tap for.
+    ///
+    /// `keyUp` is deliberately absent: the only non-modifier key we care about
+    /// is Escape, and one edge is enough to cancel. Subscribing to it would
+    /// double the number of events the tap hands us — for every keystroke the
+    /// user ever types, in any app — to no purpose.
+    static let eventMask: CGEventMask =
+        (1 << CGEventType.flagsChanged.rawValue)
+        | (1 << CGEventType.keyDown.rawValue)
+
     /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
     private let mask: CGEventFlags
     private let debug: Bool
     private let config: LatchConfig
-    private var onEvent: ((Event) -> Void)?
+    var onEvent: ((Event) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
@@ -90,10 +100,6 @@ final class HotkeyMonitor {
             throw HotkeyError.accessibilityDenied
         }
 
-        let mask: CGEventMask =
-            (1 << CGEventType.flagsChanged.rawValue)
-            | (1 << CGEventType.keyDown.rawValue)
-            | (1 << CGEventType.keyUp.rawValue)
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
 
         // .cgSessionEventTap is the right level for an accessibility-granted
@@ -103,7 +109,7 @@ final class HotkeyMonitor {
                 tap: .cgSessionEventTap,
                 place: .headInsertEventTap,
                 options: .listenOnly,
-                eventsOfInterest: mask,
+                eventsOfInterest: Self.eventMask,
                 callback: hotkeyCallback,
                 userInfo: userInfo
             )
@@ -134,10 +140,24 @@ final class HotkeyMonitor {
         state = .idle
     }
 
-    fileprivate func handle(type: CGEventType, event: CGEvent) {
+    /// Whether an event is worth handing to the state machine.
+    ///
+    /// Checked in the tap callback so the overwhelming majority of events —
+    /// every ordinary keystroke, and every modifier press that isn't our
+    /// hotkey — cost one comparison instead of a `CGEvent` copy and a
+    /// main-queue dispatch. Shift alone makes `.flagsChanged` fire on every
+    /// capital letter typed anywhere on the system.
+    func wants(type: CGEventType, flags: CGEventFlags, keycode: Int64) -> Bool {
+        if debug { return true }
+        switch type {
+        case .keyDown: return keycode == Self.escapeKeyCode
+        case .flagsChanged: return flags.contains(mask) != isPressed
+        default: return false
+        }
+    }
+
+    func handle(type: CGEventType, flags: CGEventFlags, keycode: Int64) {
         if debug {
-            let flags = event.flags
-            let keycode = event.getIntegerValueField(.keyboardEventKeycode)
             FileHandle.standardError.write(
                 Data(
                     "  [debug] type=\(type.rawValue) keycode=\(keycode) flags=\(String(flags.rawValue, radix: 16))\n"
@@ -145,14 +165,13 @@ final class HotkeyMonitor {
                 ))
         }
 
-        if type == .keyDown,
-           event.getIntegerValueField(.keyboardEventKeycode) == Self.escapeKeyCode {
+        if type == .keyDown, keycode == Self.escapeKeyCode {
             handleEscape()
             return
         }
 
         guard type == .flagsChanged else { return }
-        let pressed = event.flags.contains(mask)
+        let pressed = flags.contains(mask)
         guard pressed != isPressed else { return }
         isPressed = pressed
         if pressed { handlePress() } else { handleRelease() }
@@ -279,11 +298,21 @@ private func hotkeyCallback(
         return Unmanaged.passUnretained(event)
     }
 
-    let copy = event.copy()
+    // Pull out the three scalars the state machine needs rather than
+    // `event.copy()` — that allocated a CGEvent for every keystroke on the
+    // system, only to throw nearly all of them away.
+    let flags = event.flags
+    let keycode = event.getIntegerValueField(.keyboardEventKeycode)
+    guard monitor.wants(type: type, flags: flags, keycode: keycode) else {
+        return Unmanaged.passUnretained(event)
+    }
+
+    // The tap source lives on the main runloop, so this callback already runs
+    // on main. The hop still earns its keep: `.end` synchronously stops the
+    // audio engine, and a slow tap callback gets the tap disabled by the
+    // system. Deferring a runloop turn keeps that work outside the callback.
     DispatchQueue.main.async {
-        if let copy {
-            monitor.handle(type: type, event: copy)
-        }
+        monitor.handle(type: type, flags: flags, keycode: keycode)
     }
     return Unmanaged.passUnretained(event)
 }

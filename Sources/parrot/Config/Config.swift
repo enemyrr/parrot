@@ -14,6 +14,8 @@ struct Config: Decodable {
     var cleanup: CleanupConfig
     var wordlist: WordlistConfig
     var history: HistoryConfig
+    var stats: StatsConfig
+    var overlay: OverlayConfig
 
     static let `default` = Config()
 
@@ -24,12 +26,14 @@ struct Config: Decodable {
         cleanup = .default
         wordlist = .default
         history = .default
+        stats = .default
+        overlay = .default
     }
 
     private enum CodingKeys: String, CodingKey {
         case model, hotkey
         case latch = "hotkey_latch"
-        case cleanup, wordlist, history
+        case cleanup, wordlist, history, stats, overlay
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +45,8 @@ struct Config: Decodable {
         cleanup = try c.decodeIfPresent(CleanupConfig.self, forKey: .cleanup) ?? d.cleanup
         wordlist = try c.decodeIfPresent(WordlistConfig.self, forKey: .wordlist) ?? d.wordlist
         history = try c.decodeIfPresent(HistoryConfig.self, forKey: .history) ?? d.history
+        stats = try c.decodeIfPresent(StatsConfig.self, forKey: .stats) ?? d.stats
+        overlay = try c.decodeIfPresent(OverlayConfig.self, forKey: .overlay) ?? d.overlay
     }
 
     // MARK: - Loading
@@ -199,6 +205,40 @@ struct WordlistConfig: Decodable {
     }
 }
 
+/// How the recording pill visualises your voice.
+enum OverlayStyle: String, Decodable {
+    /// Scrolling bar meter — newest sample enters right and travels left.
+    case bars
+    /// Siri-style stroked wave that lies flat when silent.
+    case line
+}
+
+struct OverlayConfig: Decodable {
+    var style: OverlayStyle
+    /// Meter sensitivity. 1.0 is the default; higher lowers the noise floor so
+    /// quieter mics and softer voices still fill the bars.
+    var sensitivity: Double
+
+    static let `default` = OverlayConfig(style: .bars, sensitivity: 1)
+
+    private init(style: OverlayStyle, sensitivity: Double) {
+        self.style = style
+        self.sensitivity = sensitivity
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = OverlayConfig.default
+        style = try c.decodeIfPresent(OverlayStyle.self, forKey: .style) ?? d.style
+        let raw = try c.decodeIfPresent(Double.self, forKey: .sensitivity) ?? d.sensitivity
+        sensitivity = min(3, max(0.25, raw))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case style, sensitivity
+    }
+}
+
 struct HistoryConfig: Decodable {
     var enabled: Bool
     var maxEntries: Int
@@ -220,5 +260,33 @@ struct HistoryConfig: Decodable {
         let d = HistoryConfig.default
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
         maxEntries = try c.decodeIfPresent(Int.self, forKey: .maxEntries) ?? d.maxEntries
+    }
+}
+
+struct StatsConfig: Decodable {
+    var enabled: Bool
+    /// The typing speed "time saved" is measured against. An assumption, not a
+    /// measurement — surfaced next to the number rather than hidden behind it.
+    var typingWpm: Double
+
+    static let `default` = StatsConfig(enabled: true, typingWpm: 40)
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case typingWpm = "typing_wpm"
+    }
+
+    private init(enabled: Bool, typingWpm: Double) {
+        self.enabled = enabled
+        self.typingWpm = typingWpm
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = StatsConfig.default
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        let raw = try c.decodeIfPresent(Double.self, forKey: .typingWpm) ?? d.typingWpm
+        // Clamped so a typo can't divide by zero or claim a decade saved.
+        typingWpm = min(200, max(10, raw))
     }
 }

@@ -65,8 +65,21 @@ final class TranscriptStore {
         return loadUnlocked().reversed()
     }
 
+    /// Newest first, decoding only the last `count` lines.
+    ///
+    /// The menu bar calls this every time the Recent submenu opens. Going
+    /// through `all()` meant JSON-decoding 5000 entries to show ten of them;
+    /// reading the ~1 MB file itself is cheap, the decoding wasn't. A line
+    /// that fails to decode still consumes a slot — consistent with
+    /// `loadUnlocked`, so a truncated final write costs one row, not the file.
     func recent(_ count: Int) -> [TranscriptEntry] {
-        Array(all().prefix(count))
+        guard count > 0 else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let decoded = data.split(separator: 0x0A).suffix(count)
+            .compactMap { try? Self.decoder.decode(TranscriptEntry.self, from: Data($0)) }
+        return decoded.reversed()
     }
 
     func search(_ query: String, limit: Int) -> [TranscriptEntry] {

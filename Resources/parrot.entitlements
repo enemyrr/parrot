@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Notarization requires the hardened runtime, which denies mic access
+	     unless it is requested explicitly. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- FluidAudio JIT-compiles CoreML models on first load; the hardened
+	     runtime blocks that without this. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+
+	<!-- Not sandboxed: a global hotkey (CGEventTap) and typing at the cursor
+	     in another app (CGEvent posting) are both impossible inside the
+	     sandbox. This is why parrot ships via Developer ID rather than the
+	     App Store. -->
+</dict>
+</plist>

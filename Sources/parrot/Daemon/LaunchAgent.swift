@@ -8,9 +8,15 @@ import Foundation
 enum LaunchAgent {
     static let label = "com.digimata.parrot"
 
-    /// The canonical install path. `start` prefers this, but `--binary` can
-    /// point the agent anywhere — handy for running a dev build without sudo.
+    /// The canonical install path for a script install. `--binary` can point
+    /// the agent anywhere — handy for running a dev build without sudo.
     static let installedBinary = "/usr/local/bin/parrot"
+
+    /// The binary inside an installed .app bundle. Preferred over the bare
+    /// CLI copy: someone with both has almost certainly moved to the app, and
+    /// launching a stale `/usr/local/bin/parrot` behind their back is the kind
+    /// of bug that looks like "my changes did nothing".
+    static let bundledBinary = "/Applications/parrot.app/Contents/MacOS/parrot"
 
     static var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -131,8 +137,9 @@ enum LaunchAgent {
             }
             return path
         }
-        if fm.isExecutableFile(atPath: installedBinary) {
-            return installedBinary
+        for candidate in [bundledBinary, installedBinary]
+        where fm.isExecutableFile(atPath: candidate) {
+            return candidate
         }
         let argv0 = CommandLine.arguments.first ?? ""
         if argv0.hasPrefix("/"), fm.isExecutableFile(atPath: argv0) {

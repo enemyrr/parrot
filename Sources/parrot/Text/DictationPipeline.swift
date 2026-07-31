@@ -13,6 +13,9 @@ struct DictationPipeline {
     let cleaner: TextCleaner?
     let cleanup: CleanupConfig
     let store: TranscriptStore?
+    /// Independent of `store` — stats hold no text, so they keep running for
+    /// someone who has turned history off.
+    let stats: StatsStore?
     let modelID: String
 
     /// Returns the text to inject, or nil if transcription failed or produced
@@ -63,6 +66,14 @@ struct DictationPipeline {
             latched: latched,
             cleaned: wasCleaned
         ))
+
+        stats?.record(
+            text: text,
+            spokenSeconds: seconds,
+            processSeconds: total,
+            latched: latched,
+            model: modelID
+        )
 
         return text
     }

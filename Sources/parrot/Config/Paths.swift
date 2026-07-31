@@ -25,6 +25,12 @@ enum ParrotPaths {
         dataDirectory.appendingPathComponent("history.jsonl")
     }
 
+    /// Usage counters. Separate from history because history is pruned and
+    /// clearable, so lifetime totals can't be derived from it.
+    static var statsFile: URL {
+        dataDirectory.appendingPathComponent("stats.jsonl")
+    }
+
     /// Daemon logs. `~/Library/Logs` rather than `/tmp` so they survive a
     /// reboot and show up in Console.app.
     static var logDirectory: URL {

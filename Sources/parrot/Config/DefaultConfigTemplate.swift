@@ -44,5 +44,25 @@ enum DefaultConfigTemplate {
     enabled     = true
     max_entries = 5000
 
+    # Usage totals — counts only, never the text you dictated, so this can stay
+    # on with history off. Kept in its own file that `parrot history clear`
+    # doesn't touch. `parrot stats` to see them.
+    [stats]
+    enabled = true
+    # Assumed typing speed, used only to work out "time saved". 40 wpm is
+    # composing-original-text speed, which is well below what a typing test
+    # measures. `parrot stats` shows the assumption next to the number.
+    typing_wpm = 40
+
+    [overlay]
+    # How the recording pill visualises your voice:
+    #   "bars"  scrolling meter, newest sample enters right and travels left
+    #   "line"  Siri-style wave, flat when silent
+    style = "bars"
+    # Meter sensitivity, 0.25–3.0. Higher lowers the noise floor, so a quiet
+    # mic or a soft voice still fills the bars. Tune it live with
+    # `parrot overlay-preview` (+/- keys).
+    sensitivity = 1.0
+
     """
 }

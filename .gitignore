@@ -6,3 +6,6 @@
 
 # kdb auto-rendered task index (regenerate with `kdb render`)
 .tasks/
+
+# Built app bundles and installers
+dist/

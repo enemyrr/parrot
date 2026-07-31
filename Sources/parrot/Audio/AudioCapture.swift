@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 
@@ -12,15 +13,43 @@ final class AudioCapture {
 
     static let targetSampleRate: Double = 16_000
 
+    /// Samples to keep room for between recordings — 30s at 16 kHz, ~1.9 MB.
+    /// Long enough that a typical dictation never reallocates, small enough
+    /// that a one-off five-minute hands-free session doesn't pin 19 MB for the
+    /// rest of the daemon's life.
+    static let baselineCapacity = Int(targetSampleRate) * 30
+
+    static let targetFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: targetSampleRate,
+        channels: 1,
+        interleaved: false
+    )!
+
     private let engine = AVAudioEngine()
-    private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private var isRecording = false
     private let lock = NSLock()
 
+    /// Built on first use and kept for the life of the daemon — creating one
+    /// per recording added startup latency to every hotkey press. Rebuilt only
+    /// if the input device changes format under us.
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
+    /// Reused across tap callbacks; the tap is serialized, so one is enough.
+    private var outBuffer: AVAudioPCMBuffer?
+
     /// Called for every audio buffer with the buffer's RMS level (0…~1).
     /// Invoked on an arbitrary thread; hop to main if you touch UI.
     var onLevel: ((Float) -> Void)?
+
+    /// Snapshot of what's accumulated so far, without ending the recording.
+    /// Exists for tests; `stop()` is what callers want.
+    var captured: [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples
+    }
 
     /// Begin recording. Idempotent — calling while already recording is a no-op.
     func start() throws {
@@ -28,21 +57,12 @@ final class AudioCapture {
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-
-        let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: AudioCapture.targetSampleRate,
-            channels: 1,
-            interleaved: false
-        )!
-
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw CaptureError.converterCreationFailed
-        }
-        self.converter = converter
+        let targetFormat = Self.targetFormat
+        let converter = try cachedConverter(for: inputFormat)
 
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        samples.reserveCapacity(Self.baselineCapacity)
         lock.unlock()
 
         // Tap with input format; convert inside the callback.
@@ -61,6 +81,21 @@ final class AudioCapture {
         isRecording = true
     }
 
+    private func cachedConverter(for inputFormat: AVAudioFormat) throws -> AVAudioConverter {
+        if let converter, let converterInputFormat, converterInputFormat == inputFormat {
+            // Stale decoder state from the previous utterance would otherwise
+            // bleed a few samples into the next one.
+            converter.reset()
+            return converter
+        }
+        guard let fresh = AVAudioConverter(from: inputFormat, to: Self.targetFormat) else {
+            throw CaptureError.converterCreationFailed
+        }
+        converter = fresh
+        converterInputFormat = inputFormat
+        return fresh
+    }
+
     /// Stop recording and return all captured samples (16 kHz mono Float32).
     @discardableResult
     func stop() -> [Float] {
@@ -69,14 +104,28 @@ final class AudioCapture {
         engine.inputNode.removeTap(onBus: 0)
         isRecording = false
 
+        return drain()
+    }
+
+    /// Hand back everything captured and reset the buffer to its baseline.
+    ///
+    /// Deliberately *not* `removeAll(keepingCapacity:)`. The returned array
+    /// still references the storage, so that would copy-on-write a fresh empty
+    /// buffer at the same capacity — after a five-minute hands-free session the
+    /// daemon would hold 19 MB of empty array for the rest of its life.
+    func drain() -> [Float] {
         lock.lock()
+        defer { lock.unlock() }
         let captured = samples
-        samples.removeAll(keepingCapacity: true)
-        lock.unlock()
+        samples = []
+        samples.reserveCapacity(Self.baselineCapacity)
         return captured
     }
 
-    private func process(
+    /// Internal rather than private so tests can drive the conversion path
+    /// with a synthesized buffer — it needs no microphone, and it's where the
+    /// reused output buffer and cached converter would go wrong.
+    func process(
         buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter,
         targetFormat: AVAudioFormat
@@ -85,10 +134,20 @@ final class AudioCapture {
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let outCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
 
-        guard let outBuffer = AVAudioPCMBuffer(
-            pcmFormat: targetFormat,
-            frameCapacity: outCapacity
-        ) else { return }
+        // Reuse across callbacks; only reallocate if the input grows. The tap
+        // is serialized, so there's no second writer to race with.
+        let outBuffer: AVAudioPCMBuffer
+        if let existing = self.outBuffer, existing.frameCapacity >= outCapacity {
+            outBuffer = existing
+        } else {
+            guard let fresh = AVAudioPCMBuffer(
+                pcmFormat: targetFormat,
+                frameCapacity: outCapacity
+            ) else { return }
+            self.outBuffer = fresh
+            outBuffer = fresh
+        }
+        outBuffer.frameLength = 0
 
         var consumed = false
         let inputBlock: AVAudioConverterInputBlock = { _, status in
@@ -106,15 +165,17 @@ final class AudioCapture {
         guard status != .error, let channelData = outBuffer.floatChannelData else { return }
 
         let count = Int(outBuffer.frameLength)
-        let ptr = channelData[0]
-        let chunk = Array(UnsafeBufferPointer(start: ptr, count: count))
+        guard count > 0 else { return }
+        let chunk = UnsafeBufferPointer(start: channelData[0], count: count)
 
+        // Append straight from the pointer — the intermediate `Array(...)` copy
+        // this used to make was pure overhead on every audio callback.
         lock.lock()
         samples.append(contentsOf: chunk)
         lock.unlock()
 
         if let onLevel {
-            onLevel(computeRMS(chunk))
+            onLevel(rms(chunk))
         }
     }
 }
@@ -161,9 +222,19 @@ enum WAVWriter {
     }
 }
 
+/// Root-mean-square level of a sample block.
+///
+/// vDSP rather than a scalar loop: this runs over the *whole* capture when a
+/// recording ends, and a five-minute hands-free session is 4.8M samples —
+/// enough of a scalar loop to be felt as a hitch on the main thread at exactly
+/// the moment the user is waiting for their text.
+func rms(_ samples: UnsafeBufferPointer<Float>) -> Float {
+    guard let base = samples.baseAddress, samples.count > 0 else { return 0 }
+    var result: Float = 0
+    vDSP_rmsqv(base, 1, &result, vDSP_Length(samples.count))
+    return result
+}
+
 func computeRMS(_ samples: [Float]) -> Float {
-    guard !samples.isEmpty else { return 0 }
-    var sum: Double = 0
-    for s in samples { sum += Double(s * s) }
-    return Float((sum / Double(samples.count)).squareRoot())
+    samples.withUnsafeBufferPointer { rms($0) }
 }
