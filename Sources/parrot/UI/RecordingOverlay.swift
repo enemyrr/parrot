@@ -25,6 +25,11 @@ final class RecordingOverlay {
 
     private var window: NSPanel?
     private let model = OverlayModel()
+    /// Whether the download pill is up. Tracked separately from `model.state`,
+    /// which `show()` sets a runloop turn late — `completeDownload()` can land
+    /// inside that gap, and reading the state there would miss the pill and
+    /// leave it on screen forever.
+    private(set) var downloadPillShown = false
 
     init(style: OverlayStyle = .bars, sensitivity: Double = 1) {
         model.style = style
@@ -93,7 +98,8 @@ final class RecordingOverlay {
         // completeDownload() and can't fire un-animated from a raw callback.
         model.progress = min(fraction, 0.995)
         model.progressLabel = label
-        if model.state != .downloading {
+        if !downloadPillShown {
+            downloadPillShown = true
             show(.downloading)
         }
     }
@@ -103,7 +109,8 @@ final class RecordingOverlay {
     /// Skipping straight to hide() read as the download being cut off rather
     /// than finishing.
     func completeDownload() {
-        guard model.state == .downloading else { return }
+        guard downloadPillShown else { return }
+        downloadPillShown = false
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
             model.progress = 1
             model.progressLabel = "Finished"

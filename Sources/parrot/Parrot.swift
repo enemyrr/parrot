@@ -123,6 +123,13 @@ struct Run: ParsableCommand {
             throw ExitCode(1)
         }
 
+        // AppKit is initialised before the overlay rather than after warm-up:
+        // the first window creation costs less once NSApp exists, and paying
+        // that cost inside a progress callback used to stall the whole warm-up
+        // pump behind it.
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+
         // Created before warm-up so a first-run model download (~460 MB) has
         // somewhere to show progress; reused afterwards for recording states.
         let overlay: RecordingOverlay? = noOverlay
@@ -131,23 +138,14 @@ struct Run: ParsableCommand {
                 RecordingOverlay(style: config.overlay.style, sensitivity: config.overlay.sensitivity)
             }
 
-        let modelID = chosenModel.id
-        let progressLog = MainActor.assumeIsolated { DownloadProgressLog() }
+        let hud = MainActor.assumeIsolated {
+            WarmupHUD(overlay: overlay, modelID: chosenModel.id)
+        }
         let transcriber = ParakeetTranscriber(
             model: chosenModel,
             language: language,
             downloadProgress: { progress in
-                let verb: String
-                switch progress.phase {
-                case .listing: verb = "preparing"
-                case .downloading: verb = "downloading"
-                case .compiling: verb = "compiling"
-                }
-                let fraction = progress.fractionCompleted
-                Task { @MainActor in
-                    overlay?.setDownloadProgress(fraction, label: "\(verb) \(modelID)")
-                    progressLog.log(verb: verb, fraction: fraction, model: modelID)
-                }
+                Task { @MainActor in hud.report(progress) }
             }
         )
         let warmupSemaphore = DispatchSemaphore(value: 0)
@@ -165,8 +163,9 @@ struct Run: ParsableCommand {
         while warmupSemaphore.wait(timeout: .now()) == .timedOut {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
-        // No-op if the pill never appeared (models were already cached).
-        MainActor.assumeIsolated { overlay?.completeDownload() }
+        // No-op if the pill never appeared. Latches too, so a progress callback
+        // still queued on the main actor can't put it back up afterwards.
+        MainActor.assumeIsolated { hud.finish() }
         if let warmupError {
             FileHandle.standardError.write(Data("warmup failed: \(warmupError)\n".utf8))
             throw ExitCode(1)
@@ -204,9 +203,6 @@ struct Run: ParsableCommand {
                 cleanupDetail = "\(error)"
             }
         }
-
-        let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
 
         let monitor = HotkeyMonitor(mask: hotkeyMask, config: config.latch, debug: debugHotkey)
         let capture = AudioCapture()
@@ -349,19 +345,86 @@ struct Run: ParsableCommand {
     }
 }
 
-/// Mirrors download progress to stderr in coarse steps — the pill is absent
-/// under --no-overlay and invisible over ssh, but `parrot logs -f` is not.
+/// Turns FluidAudio's raw warm-up progress into the startup pill, plus a
+/// coarse stderr trail — the pill is absent under --no-overlay and invisible
+/// over ssh, but `parrot logs -f` is not.
+///
+/// Two things need handling. FluidAudio reports per sub-operation — a separate
+/// reporter per CoreML model — so the raw fraction sawtooths 0→1 once per
+/// model, four times on a cached start; fed straight to the ring, a warm-up
+/// that is working looks like it is looping. And the callbacks hop to the main
+/// actor, so the last of them can land after warm-up has already returned,
+/// which is why finishing latches.
 @MainActor
-private final class DownloadProgressLog {
+final class WarmupHUD {
+    private let overlay: RecordingOverlay?
+    private let modelID: String
+    private var curve = WarmupProgressCurve()
     private var lastDecile = -1
+    private var finished = false
 
-    func log(verb: String, fraction: Double, model: String) {
+    init(overlay: RecordingOverlay?, modelID: String) {
+        self.overlay = overlay
+        self.modelID = modelID
+    }
+
+    func report(_ progress: DownloadProgress) {
+        // A callback that lost the race with finish() must not raise the pill
+        // again: warm-up is over, so nothing is left to take it back down.
+        guard !finished else { return }
+
+        let fraction = curve.advance(to: progress.fractionCompleted)
+
+        let verb: String
+        switch progress.phase {
+        case .listing:
+            verb = "preparing"
+        // A cached start reports nothing to fetch. Calling that "downloading"
+        // is a lie the user would read on every single launch.
+        case .downloading(_, let totalFiles):
+            verb = totalFiles == 0 ? "loading" : "downloading"
+        case .compiling:
+            verb = "compiling"
+        }
+
+        overlay?.setDownloadProgress(fraction, label: "\(verb) \(modelID)")
+
         let decile = Int(fraction * 10)
         guard decile != lastDecile else { return }
         lastDecile = decile
         FileHandle.standardError.write(Data(
-            "\(verb) \(model)… \(Int(fraction * 100))%\n".utf8
+            "\(verb) \(modelID)… \(Int(fraction * 100))%\n".utf8
         ))
+    }
+
+    /// Warm-up is done: land the pill and stop accepting progress.
+    func finish() {
+        finished = true
+        // A no-op if the pill never went up.
+        overlay?.completeDownload()
+    }
+}
+
+/// Folds a sawtooth of per-sub-operation fractions into one that only climbs.
+///
+/// Each sub-operation is given half of whatever progress is left — 0→50%,
+/// 50→75%, 75→87.5% — so the curve needs no advance knowledge of how many are
+/// coming, never regresses, and never reaches 100% on its own. The caller owns
+/// the landing on 1.0.
+struct WarmupProgressCurve {
+    private var segmentStart: Double = 0
+    private var segmentSpan: Double = 0.5
+    private var lastRaw: Double = 0
+
+    /// Feed the next raw fraction; a value below the previous one is read as
+    /// "a new sub-operation started".
+    mutating func advance(to raw: Double) -> Double {
+        if raw < lastRaw {
+            segmentStart += segmentSpan
+            segmentSpan /= 2
+        }
+        lastRaw = raw
+        return segmentStart + segmentSpan * min(max(raw, 0), 1)
     }
 }
 
