@@ -99,15 +99,32 @@ struct SettingsCard<Content: View>: View {
 private struct DividedRows: _VariadicView_UnaryViewRoot {
     @ViewBuilder
     func body(children: _VariadicView.Children) -> some View {
+        let rows = Array(children)
         VStack(spacing: 0) {
-            ForEach(children) { child in
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, child in
                 child
-                if child.id != children.last?.id {
+                // Both sides get a say: a caption row shouldn't be boxed in by
+                // the row above it either.
+                if index < rows.count - 1,
+                   !child[PlainRowTrait.self],
+                   !rows[index + 1][PlainRowTrait.self] {
                     Divider()
                         .padding(.leading, SettingsMetrics.rowHorizontalPadding)
                 }
             }
         }
+    }
+}
+
+private struct PlainRowTrait: _ViewTraitKey {
+    static var defaultValue: Bool { false }
+}
+
+extension View {
+    /// Marks a row that shouldn't be fenced off by hairlines — a caption
+    /// heading a run of rows rather than a row in its own right.
+    func plainCardRow() -> some View {
+        _trait(PlainRowTrait.self, true)
     }
 }
 
