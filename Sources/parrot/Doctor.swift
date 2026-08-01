@@ -157,6 +157,11 @@ enum DoctorReport {
     /// happen, and the Models pane is where that happens.
     static func checkModel(_ settings: Settings) -> Check {
         let model = settings.resolvedModel
+        // A cloud model has nothing to download; what it can be missing is a
+        // key, and unlike cleanup there is no raw transcript to fall back to.
+        if !model.isLocal, let account = model.engine.keychainAccount {
+            return checkAPIKey(account, kind: .model, name: "Model")
+        }
         guard model.isDownloaded else {
             return Check(
                 kind: .model,
@@ -177,6 +182,16 @@ enum DoctorReport {
             return Check(kind: .languages, name: name, status: .ok, remediation: nil)
         }
         let listed = settings.languages.joined(separator: ", ")
+
+        // Everything below describes Parakeet's script filter, which is the
+        // most this setting can mean locally. The API takes the list as a real
+        // multi-language hint, so none of those caveats apply.
+        guard settings.resolvedModel.isLocal else {
+            return Check(
+                kind: .languages, name: name, status: .ok,
+                remediation: "\(listed) — sent as language hints"
+            )
+        }
 
         switch LanguageSelection.resolve(settings.languages) {
         case .filter(let language):
@@ -225,15 +240,19 @@ enum DoctorReport {
         }
     }
 
-    private static func checkAPIKey(_ account: Keychain.Account) -> Check {
+    private static func checkAPIKey(
+        _ account: Keychain.Account,
+        kind: CheckKind = .cleanup,
+        name: String = "Cleanup"
+    ) -> Check {
         guard Keychain.apiKey(for: account) != nil else {
             return Check(
-                kind: .cleanup, name: "Cleanup",
+                kind: kind, name: name,
                 status: .warn("no \(account.displayName) API key"),
-                remediation: "Add one in the Cleanup tab, or set \(account.envVar)."
+                remediation: "Add one in the Accounts tab, or set \(account.envVar)."
             )
         }
-        return Check(kind: .cleanup, name: "Cleanup", status: .ok, remediation: nil)
+        return Check(kind: kind, name: name, status: .ok, remediation: nil)
     }
 
     // MARK: - Helpers

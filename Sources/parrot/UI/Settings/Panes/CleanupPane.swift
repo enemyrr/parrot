@@ -142,13 +142,14 @@ struct CleanupPane: View {
     @ViewBuilder
     private var credentialsCard: some View {
         if let account = cleanup.provider.keychainAccount {
-            SettingsCard(
-                header: "\(account.displayName) account",
-                footer: "Keys are kept in the macOS Keychain, never in a settings file. "
-                    + "\(account.envVar) is used as a fallback if no key is stored."
-            ) {
+            SettingsCard(header: "\(account.displayName) account") {
                 SettingsCustomRow(verticalPadding: 12) {
-                    APIKeyEditor(account: account, state: keys)
+                    APIKeyStatusRow(
+                        account: account,
+                        consequence: "Cleanup will fall back to the raw transcript "
+                            + "until one is added.",
+                        state: keys
+                    )
                 }
 
                 SettingsRow(
@@ -458,115 +459,3 @@ private struct ProviderOption: View {
     }
 }
 
-// MARK: - API key
-
-/// Tracks what the Keychain and environment currently hold. Read on demand
-/// rather than cached at launch — the user may have just run
-/// `parrot cleanup set-key` in a terminal.
-@MainActor
-final class APIKeyState: ObservableObject {
-    enum Source: Equatable {
-        case none
-        case keychain
-        case environment(String)
-    }
-
-    @Published private(set) var sources: [String: Source] = [:]
-    @Published var error: String?
-
-    func refresh() {
-        for account in Keychain.Account.allCases {
-            sources[account.rawValue] = Self.source(for: account)
-        }
-    }
-
-    func source(for account: Keychain.Account) -> Source {
-        sources[account.rawValue] ?? .none
-    }
-
-    func save(_ key: String, for account: Keychain.Account) {
-        error = nil
-        do {
-            try Keychain.write(key, for: account)
-        } catch {
-            self.error = "\(error)"
-        }
-        refresh()
-    }
-
-    func remove(_ account: Keychain.Account) {
-        error = nil
-        do {
-            try Keychain.delete(account)
-        } catch {
-            self.error = "\(error)"
-        }
-        refresh()
-    }
-
-    private static func source(for account: Keychain.Account) -> Source {
-        if Keychain.read(account)?.isEmpty == false { return .keychain }
-        if ProcessInfo.processInfo.environment[account.envVar]?.isEmpty == false {
-            return .environment(account.envVar)
-        }
-        return .none
-    }
-}
-
-private struct APIKeyEditor: View {
-    let account: Keychain.Account
-    @ObservedObject var state: APIKeyState
-
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                StatusIndicator(status: status)
-                Text(statusText)
-                    .font(.system(size: 12))
-                Spacer(minLength: 8)
-                if case .keychain = state.source(for: account) {
-                    Button("Remove") { state.remove(account) }
-                        .controlSize(.small)
-                }
-            }
-
-            HStack(spacing: 6) {
-                SecureField("Paste a new \(account.displayName) API key", text: $draft)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(save)
-                Button("Save", action: save)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            if let error = state.error {
-                Text(error)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-            }
-        }
-    }
-
-    private var status: CheckStatus {
-        switch state.source(for: account) {
-        case .none: return .warn("no key")
-        case .keychain, .environment: return .ok
-        }
-    }
-
-    private var statusText: String {
-        switch state.source(for: account) {
-        case .none: return "No key — cleanup will fall back to the raw transcript."
-        case .keychain: return "Key stored in the Keychain."
-        case .environment(let name): return "Using \(name) from the environment."
-        }
-    }
-
-    private func save() {
-        let key = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return }
-        state.save(key, for: account)
-        draft = ""
-    }
-}

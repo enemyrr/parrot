@@ -10,7 +10,8 @@ struct Parrot: ParsableCommand {
         subcommands: [
             Run.self, Start.self, Stop.self, Restart.self, Status.self, Logs.self,
             SettingsCommand.self, Setup.self, Doctor.self, Models.self,
-            History.self, Stats.self, Cleanup.self, Install.self, OverlayPreview.self,
+            History.self, Stats.self, Key.self, Cleanup.self, Install.self,
+            OverlayPreview.self,
         ],
         defaultSubcommand: Run.self
     )
@@ -190,8 +191,17 @@ struct Models: ParsableCommand {
                 let id = m.id.padding(toLength: 26, withPad: " ", startingAt: 0)
                 let langs = "[\(m.languages.joined(separator: ","))]"
                     .padding(toLength: 9, withPad: " ", startingAt: 0)
-                let size = String(format: "%5d MB", m.sizeMB)
-                let state = m.isDownloaded ? "downloaded" : "not downloaded"
+                let size = m.isLocal ? String(format: "%5d MB", m.sizeMB) : "   cloud"
+                let state: String
+                if m.isLocal {
+                    state = m.isDownloaded ? "downloaded" : "not downloaded"
+                } else if let account = m.engine.keychainAccount {
+                    state = Keychain.apiKey(for: account) != nil
+                        ? "\(account.displayName) key found"
+                        : "needs an \(account.displayName) key"
+                } else {
+                    state = "ready"
+                }
                 print("\(marker) \(id) \(size)  \(langs)  \(m.displayName)  · \(state)")
             }
         }
@@ -203,6 +213,11 @@ struct Models: ParsableCommand {
         func run() throws {
             guard let m = ModelRegistry.find(id) else {
                 print("unknown model: \(id)")
+                throw ExitCode(1)
+            }
+            guard m.isLocal else {
+                print("\(m.id) runs in the cloud — there is nothing to download.")
+                print("Give it a key instead: parrot key set openai")
                 throw ExitCode(1)
             }
             let transcriber = ParakeetTranscriber(model: m)
@@ -407,20 +422,23 @@ struct Stats: ParsableCommand {
 
 extension Keychain.Account: ExpressibleByArgument {}
 
-struct Cleanup: ParsableCommand {
+/// Keys are their own command now that one can serve two features — the OpenAI
+/// key belongs to a transcription model as much as to cleanup, and
+/// `parrot cleanup set-key openai` said otherwise.
+struct Key: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Manage the optional transcript cleanup pass.",
-        subcommands: [SetKey.self, ClearKey.self]
+        commandName: "key",
+        abstract: "Manage provider API keys in the Keychain.",
+        subcommands: [Set.self, Clear.self, List.self]
     )
 
-    struct SetKey: ParsableCommand {
+    struct Set: ParsableCommand {
         static let configuration = CommandConfiguration(
-            commandName: "set-key",
             abstract: "Store a provider API key in the Keychain."
         )
 
         @Argument(help: "Provider the key belongs to (anthropic | openai).")
-        var provider: Keychain.Account = .anthropic
+        var provider: Keychain.Account = .openai
 
         func run() throws {
             print("\(provider.displayName) API key: ", terminator: "")
@@ -437,18 +455,80 @@ struct Cleanup: ParsableCommand {
         }
     }
 
+    struct Clear: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Remove a stored provider API key."
+        )
+
+        @Argument(help: "Provider whose key to remove (anthropic | openai).")
+        var provider: Keychain.Account = .openai
+
+        func run() throws {
+            try Keychain.delete(provider)
+            print("key removed")
+        }
+    }
+
+    struct List: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show which providers have a key, without printing any."
+        )
+
+        func run() throws {
+            for account in Keychain.Account.allCases {
+                let source: String
+                if Keychain.read(account)?.isEmpty == false {
+                    source = "keychain"
+                } else if ProcessInfo.processInfo.environment[account.envVar]?.isEmpty == false {
+                    source = account.envVar
+                } else {
+                    source = "—"
+                }
+                let name = account.displayName.padding(toLength: 12, withPad: " ", startingAt: 0)
+                print("\(name) \(source)")
+            }
+        }
+    }
+}
+
+struct Cleanup: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Manage the optional transcript cleanup pass.",
+        subcommands: [SetKey.self, ClearKey.self]
+    )
+
+    /// Kept as an alias of `parrot key set`. Someone has this in a setup script
+    /// or a shell alias, and breaking it to rename a command isn't a trade
+    /// worth making.
+    struct SetKey: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "set-key",
+            abstract: "Deprecated alias for `parrot key set`."
+        )
+
+        @Argument(help: "Provider the key belongs to (anthropic | openai).")
+        var provider: Keychain.Account = .anthropic
+
+        func run() throws {
+            var command = Key.Set()
+            command.provider = provider
+            try command.run()
+        }
+    }
+
     struct ClearKey: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "clear-key",
-            abstract: "Remove a stored provider API key."
+            abstract: "Deprecated alias for `parrot key clear`."
         )
 
         @Argument(help: "Provider whose key to remove (anthropic | openai).")
         var provider: Keychain.Account = .anthropic
 
         func run() throws {
-            try Keychain.delete(provider)
-            print("key removed")
+            var command = Key.Clear()
+            command.provider = provider
+            try command.run()
         }
     }
 }

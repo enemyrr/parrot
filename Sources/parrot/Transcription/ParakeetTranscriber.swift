@@ -54,7 +54,11 @@ actor ParakeetTranscriber: Transcriber {
         FileHandle.standardError.write(Data("✓ \(model.id) ready\n".utf8))
     }
 
-    func transcribe(_ audio: [Float]) async throws -> String {
+    /// The context is ignored: the script hint is fixed at construction (the
+    /// decoder takes it once, not per utterance), and a TDT transducer has no
+    /// way to be handed vocabulary at inference time. Both are why the API
+    /// model exists as an alternative.
+    func transcribe(_ audio: [Float], context: TranscriptionContext) async throws -> String {
         if manager == nil { try await warmUp() }
         guard let manager else { throw TranscriberError.notLoaded }
 

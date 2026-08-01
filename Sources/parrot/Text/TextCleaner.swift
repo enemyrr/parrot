@@ -28,7 +28,7 @@ enum CleanerError: Error, CustomStringConvertible {
         switch self {
         case .unavailable(let why): return why
         case .missingAPIKey(let account):
-            return "no \(account.displayName) API key — add one in the Cleanup tab "
+            return "no \(account.displayName) API key — add one in the Accounts tab "
                 + "of `parrot settings`, or set \(account.envVar)"
         case .timedOut: return "cleanup timed out"
         case .badResponse(let detail): return "cleanup failed: \(detail)"

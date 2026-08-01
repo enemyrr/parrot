@@ -60,9 +60,10 @@ Everything lives in one window — `parrot settings`, or **Settings…** in the 
 |---|---|
 | **General** | The push-to-talk key, hands-free timings, spoken languages, start-at-login |
 | **Models** | Which model, download progress, size on disk, delete |
-| **Cleanup** | Raw vs cleaned, provider, API key, prompt |
+| **Cleanup** | Raw vs cleaned, provider, prompt |
 | **Dictionary** | Vocabulary and find → replace rules |
 | **Appearance** | The recording pill's look, with a live microphone preview |
+| **Accounts** | API keys, and what is currently using each one |
 | **History** | Recent transcripts, usage totals, retention |
 | **Permissions** | Microphone, Accessibility and the Fn key mapping, re-checked live |
 
@@ -81,7 +82,7 @@ A recorded shortcut needs a modifier, or has to be a function key. parrot watche
 An opt-in second pass that fixes punctuation, capitalization and sentence breaks, and drops filler words. Off by default.
 
 - **Apple** runs on-device (macOS 26+) — no key, no network, nothing leaves the machine.
-- **Anthropic** and **OpenAI** call their APIs. Paste the key in the Cleanup tab, or use `parrot cleanup set-key`; either way it goes in the Keychain, never in a settings file. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` work as a fallback.
+- **Anthropic** and **OpenAI** call their APIs. Paste the key in the Accounts tab, or use `parrot key set`; either way it goes in the Keychain, never in a settings file. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` work as a fallback.
 
 If cleanup fails, times out, or returns something implausible, parrot injects the raw transcript instead. **Dictation never blocks on a language model.**
 
@@ -136,7 +137,8 @@ parrot models list               # list models, and which are downloaded
 parrot models download <id>      # pre-download a model
 parrot history [search|clear]    # browse past transcriptions
 parrot stats                     # how much you've dictated
-parrot cleanup set-key <p>       # store a provider API key in the Keychain
+parrot key set | clear <p>       # store or remove a provider API key
+parrot key list                  # which providers have a key (never prints one)
 parrot --no-overlay              # disable the bottom-of-screen pill for this run
 parrot --dump-wav                # write each capture to /tmp/parrot-last.wav
 ```
@@ -147,12 +149,20 @@ parrot --dump-wav                # write each capture to /tmp/parrot-last.wav
 
 ## Models
 
-| id | languages | notes |
-|---|---|---|
-| `parakeet-v3` | 25 European (auto-detect) | default |
-| `parakeet-v2` | English only | ~0.3pp better English WER |
+| id | languages | where it runs | notes |
+|---|---|---|---|
+| `parakeet-v3` | 25 European (auto-detect) | this Mac | default |
+| `parakeet-v2` | English only | this Mac | ~0.3pp better English WER |
+| `gpt-transcribe` | 100+ | OpenAI | $0.0045/min, needs a key |
 
-Both are NVIDIA Parakeet TDT 0.6B, running on the Neural Engine via FluidAudio. Unlike Whisper, a transducer emits nothing for silence — a short noisy tap of the hotkey produces an empty transcript rather than an invented `[BLANK_AUDIO]`.
+Both Parakeets are NVIDIA Parakeet TDT 0.6B, running on the Neural Engine via FluidAudio. Unlike Whisper, a transducer emits nothing for silence — a short noisy tap of the hotkey produces an empty transcript rather than an invented `[BLANK_AUDIO]`.
+
+`gpt-transcribe` is the escape hatch, not an upgrade. It is **slower** — a network round trip against a fraction of a second on the ANE — it costs money, it needs a connection, and **your audio leaves the machine**. What it buys is the two things a local transducer structurally can't do:
+
+- **Languages outside Parakeet's 25.** Japanese, Korean, Arabic, Hindi, Thai and the rest.
+- **Steering.** Your Dictionary vocabulary is sent as `keywords`, and your spoken languages as `languages`, so they condition the decode instead of patching its output afterwards. That's the difference between the model hearing "Vercel" and a find/replace fixing "vercell" after the fact.
+
+Pick it in the Models tab; the key lives in Accounts.
 
 ## Stack
 

@@ -23,7 +23,7 @@ final class DictationController {
 
     private var settings: Settings
 
-    private var transcriber: ParakeetTranscriber?
+    private var transcriber: Transcriber?
     private var monitor: HotkeyMonitor?
     private let capture = AudioCapture()
     private var overlay: RecordingOverlay?
@@ -177,11 +177,10 @@ final class DictationController {
             return
         }
 
-        context.engineStatus = .loading("Loading \(model.id)")
+        context.engineStatus = .loading(model.isLocal ? "Loading \(model.id)" : "Checking \(model.id)")
         menuBar?.setEngine(.loading)
 
-        let language = resolveLanguage()
-        let transcriber = ParakeetTranscriber(model: model, language: language)
+        let transcriber = makeTranscriber(for: model)
         self.transcriber = transcriber
 
         Task { [weak self] in
@@ -200,11 +199,27 @@ final class DictationController {
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self, self.engineGeneration == generation else { return }
-                    self.context.engineStatus = .failed("\(model.id) failed to load")
+                    // A remote model's only warm-up is "is there a key?", and
+                    // naming that is far more use than "failed to load" — the
+                    // fix is in the Accounts pane, not the Models pane.
+                    let detail = (error as? TranscriberError)?.description
+                    self.context.engineStatus = .failed(
+                        model.isLocal ? "\(model.id) failed to load" : (detail ?? "\(model.id) unavailable")
+                    )
                     self.menuBar?.setEngine(.failed)
-                    FileHandle.standardError.write(Data("warmup failed: \(error)\n".utf8))
+                    FileHandle.standardError.write(Data("warmup failed: \(detail ?? "\(error)")\n".utf8))
                 }
             }
+        }
+    }
+
+    /// The one place a registry entry becomes a running engine.
+    private func makeTranscriber(for model: TranscriptionModel) -> Transcriber {
+        switch model.engine {
+        case .parakeet:
+            return ParakeetTranscriber(model: model, language: resolveLanguage())
+        case .openai:
+            return OpenAITranscriber(model: model)
         }
     }
 
@@ -437,6 +452,13 @@ final class DictationController {
             cleanup: settings.cleanup,
             store: history,
             languages: LanguageSelection.displayNames(settings.languages),
+            // The wordlist's vocabulary, headed upstream this time: the same
+            // terms the cleaner is told to preserve are the ones the API
+            // decoder is told to listen for.
+            transcription: TranscriptionContext(
+                vocabulary: wordlist.vocabulary,
+                languages: settings.languages
+            ),
             stats: stats,
             // The transcriber in hand, not the selected id: choosing a model
             // that isn't downloaded yet keeps the previous one running, and

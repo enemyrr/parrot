@@ -13,8 +13,12 @@ extension TranscriptionModel {
         AsrModels.defaultCacheDirectory(for: asrVersion)
     }
 
+    /// A remote model is always "downloaded": there is nothing to fetch, and
+    /// answering false would send the daemon into the download branch on every
+    /// launch and park it there.
     var isDownloaded: Bool {
-        AsrModels.modelsExist(at: cacheDirectory, version: asrVersion)
+        guard isLocal else { return true }
+        return AsrModels.modelsExist(at: cacheDirectory, version: asrVersion)
     }
 }
 
@@ -27,6 +31,11 @@ enum ModelState: Equatable {
     /// `bytes` is nil until the directory has been measured off the main thread.
     case installed(bytes: Int64?)
     case failed(String)
+    /// Runs on someone else's machine, so none of the states above apply — it
+    /// is a case of its own rather than a permanently-`.installed` model, so a
+    /// switch that forgets about it fails to compile instead of offering a
+    /// Delete button for files that don't exist.
+    case remote
 
     var isDownloading: Bool {
         if case .downloading = self { return true }
@@ -78,6 +87,10 @@ final class ModelCatalog: ObservableObject {
     /// directory sizing, which is handed off and lands later.
     func refresh() {
         for model in ModelRegistry.shared {
+            guard model.isLocal else {
+                states[model.id] = .remote
+                continue
+            }
             // Never stomp a download in flight; disk says "not installed" for
             // the whole of one, which would flip the row back to a Download
             // button mid-fetch.
@@ -101,7 +114,7 @@ final class ModelCatalog: ObservableObject {
     // MARK: - Downloading
 
     func download(_ model: TranscriptionModel) {
-        guard tasks[model.id] == nil else { return }
+        guard model.isLocal, tasks[model.id] == nil else { return }
         curves[model.id] = WarmupProgressCurve()
         states[model.id] = .downloading(fraction: 0, phase: "preparing")
 
@@ -143,6 +156,7 @@ final class ModelCatalog: ObservableObject {
     }
 
     func cancelDownload(_ model: TranscriptionModel) {
+        guard model.isLocal else { return }
         let wasDownloading = tasks[model.id] != nil
         tasks[model.id]?.cancel()
         tasks[model.id] = nil
@@ -206,6 +220,7 @@ final class ModelCatalog: ObservableObject {
     /// Removes the model's cache directory. Throws rather than reporting into
     /// `states` — this one is user-initiated, so it gets an alert.
     func delete(_ model: TranscriptionModel) throws {
+        guard model.isLocal else { return }
         cancelDownload(model)
         let directory = model.cacheDirectory
         if FileManager.default.fileExists(atPath: directory.path) {

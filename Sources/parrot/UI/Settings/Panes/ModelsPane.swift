@@ -13,14 +13,19 @@ struct ModelsPane: View {
     @ObservedObject var context: SettingsContext
 
     @State private var deleteCandidate: TranscriptionModel?
+    @StateObject private var keys = APIKeyState()
+
+    private var activeModel: TranscriptionModel { store.settings.resolvedModel }
 
     var body: some View {
         SettingsPage(
             title: "Models",
-            subtitle: "Transcription runs entirely on this Mac, on the Neural Engine."
+            subtitle: activeModel.isLocal
+                ? "Transcription runs entirely on this Mac, on the Neural Engine."
+                : "Transcription runs on OpenAI's servers. Your audio leaves this Mac."
         ) {
-            SettingsCard(header: "Available") {
-                ForEach(ModelRegistry.shared, id: \.id) { model in
+            SettingsCard(header: "On this Mac") {
+                ForEach(ModelRegistry.shared.filter(\.isLocal), id: \.id) { model in
                     ModelRow(
                         model: model,
                         state: catalog.state(for: model),
@@ -28,7 +33,7 @@ struct ModelsPane: View {
                         // still marks the model actually in use — otherwise no
                         // row shows as active and the running one offers a
                         // Delete button.
-                        isActive: store.settings.resolvedModel.id == model.id,
+                        isActive: activeModel.id == model.id,
                         engineStatus: context.engineStatus,
                         select: { select(model) },
                         download: { catalog.download(model) },
@@ -38,6 +43,7 @@ struct ModelsPane: View {
                 }
             }
 
+            cloudCard
             storageCard
         }
         .onAppear { catalog.refresh() }
@@ -57,6 +63,44 @@ struct ModelsPane: View {
         }
     }
 
+    /// Kept in its own card rather than mixed into the list above. The choice
+    /// between these models isn't "which is better" — it's whether the audio
+    /// leaves the machine, and a single list of radio buttons hides that.
+    @ViewBuilder
+    private var cloudCard: some View {
+        let remote = ModelRegistry.shared.filter { !$0.isLocal }
+        if !remote.isEmpty {
+            SettingsCard(
+                header: "In the cloud",
+                footer: "Billed per minute of audio by OpenAI. Slower than the local "
+                    + "models — a round trip against a fraction of a second on the "
+                    + "Neural Engine — but it understands languages Parakeet doesn't, "
+                    + "and your Dictionary terms steer it while it decodes instead of "
+                    + "being corrected afterwards."
+            ) {
+                ForEach(remote, id: \.id) { model in
+                    CloudModelRow(
+                        model: model,
+                        isActive: activeModel.id == model.id,
+                        engineStatus: context.engineStatus,
+                        select: { store.settings.model = model.id }
+                    )
+                }
+
+                if activeModel.engine == .openai {
+                    SettingsCustomRow(verticalPadding: 12) {
+                        APIKeyStatusRow(
+                            account: .openai,
+                            consequence: "Dictation can't run without one — add a key "
+                                + "or switch back to a local model.",
+                            state: keys
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private var storageCard: some View {
         SettingsCard(header: "Storage") {
             SettingsRow(
@@ -67,7 +111,12 @@ struct ModelsPane: View {
                 wideControl: true
             ) {
                 Button("Reveal in Finder") {
-                    let directory = store.settings.resolvedModel.cacheDirectory
+                    // The active model may be a cloud one, which has no
+                    // directory to reveal — fall back to a model that does.
+                    let target = activeModel.isLocal
+                        ? activeModel
+                        : (ModelRegistry.recommended() ?? ModelRegistry.shared[0])
+                    let directory = target.cacheDirectory
                     NSWorkspace.shared.selectFile(
                         directory.path,
                         inFileViewerRootedAtPath: directory.deletingLastPathComponent().path
@@ -153,13 +202,13 @@ private struct ModelRow: View {
     }
 
     private var subtitle: String {
-        var parts = [languageLabel]
+        var parts = [model.languageSummary]
         switch state {
         case .installed(let bytes):
             parts.append(bytes.map(\.formattedBytes) ?? "\(model.sizeMB) MB")
         case .notInstalled, .failed:
             parts.append("\(model.sizeMB) MB download")
-        case .downloading:
+        case .downloading, .remote:
             break
         }
         if isActive, case .ready(let id) = engineStatus, id == model.id {
@@ -168,17 +217,13 @@ private struct ModelRow: View {
         return parts.joined(separator: " · ")
     }
 
-    private var languageLabel: String {
-        model.languages == ["multi"] ? "25 languages" : model.languages.joined(separator: ", ")
-    }
-
     @ViewBuilder
     private var trailing: some View {
         switch state {
         case .notInstalled, .failed:
             Button("Download", action: download)
                 .controlSize(.small)
-        case .downloading:
+        case .downloading, .remote:
             EmptyView()
         case .installed:
             HStack(spacing: 8) {
@@ -199,6 +244,52 @@ private struct ModelRow: View {
                 }
             }
         }
+    }
+}
+
+/// A model with nothing to download, delete, or measure — so the row is only a
+/// choice plus the two facts that distinguish it: what it costs, and that the
+/// audio goes somewhere.
+private struct CloudModelRow: View {
+    let model: TranscriptionModel
+    let isActive: Bool
+    let engineStatus: SettingsContext.EngineStatus
+    let select: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        SettingsCustomRow(verticalPadding: 12) {
+            HStack(alignment: .top, spacing: 11) {
+                SelectionMark(selected: isActive)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(model.displayName)
+                            .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                        Badge(text: "Sends audio", tint: .orange)
+                    }
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: select)
+            .onHover { hovering = $0 }
+        }
+        .background(hovering && !isActive ? Color.primary.opacity(0.03) : .clear)
+    }
+
+    private var subtitle: String {
+        var parts = [model.languageSummary, "$0.0045 / min"]
+        if isActive, case .ready(let id) = engineStatus, id == model.id {
+            parts.append("ready")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

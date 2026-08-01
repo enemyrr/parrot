@@ -7,6 +7,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case cleanup
     case dictionary
     case appearance
+    case accounts
     case history
     case permissions
     case about
@@ -20,6 +21,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .cleanup: return "Cleanup"
         case .dictionary: return "Dictionary"
         case .appearance: return "Appearance"
+        case .accounts: return "Accounts"
         case .history: return "History"
         case .permissions: return "Permissions"
         case .about: return "About"
@@ -33,6 +35,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .cleanup: return "sparkles"
         case .dictionary: return "character.book.closed"
         case .appearance: return "paintbrush"
+        case .accounts: return "key"
         case .history: return "clock.arrow.circlepath"
         case .permissions: return "lock.shield"
         case .about: return "bird"
@@ -51,7 +54,10 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var group: Group {
         switch self {
         case .general, .models, .cleanup, .dictionary, .appearance: return .dictation
-        case .history, .permissions, .about: return .system
+        // Accounts sits with the system settings, not with Dictation: it is
+        // setup you finish once, not a dial you turn while tuning how parrot
+        // types.
+        case .accounts, .history, .permissions, .about: return .system
         }
     }
 
@@ -139,6 +145,8 @@ struct SettingsRootView: View {
             DictionaryPane(store: store)
         case .appearance:
             AppearancePane(store: store, context: context)
+        case .accounts:
+            AccountsPane(store: store)
         case .history:
             HistoryPane(store: store)
         case .permissions:

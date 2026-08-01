@@ -28,6 +28,21 @@ enum ModelRegistry {
             languages: ["en"],
             recommended: false
         ),
+        // The one model here that isn't a download. It exists for what Parakeet
+        // structurally can't do: languages outside its 25, and vocabulary that
+        // steers the decoder rather than being patched into its output
+        // afterwards. It is slower than either local model — a round trip
+        // against a fraction of a second on the ANE — so it is never the
+        // recommendation, only the escape hatch.
+        TranscriptionModel(
+            id: "gpt-transcribe",
+            displayName: "GPT Transcribe (OpenAI)",
+            engine: .openai,
+            engineModelID: "gpt-transcribe",
+            sizeMB: 0,
+            languages: ["multi"],
+            recommended: false
+        ),
     ]
 
     /// Model ids that used to exist. Kept so a LaunchAgent plist or shell alias

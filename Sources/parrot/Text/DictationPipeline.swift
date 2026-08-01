@@ -16,6 +16,9 @@ struct DictationPipeline {
     /// Passed to the cleaner so it doesn't "correct" one of your
     /// languages into another. Display names, not ISO codes.
     let languages: [String]
+    /// Passed to the transcriber. Ignored by a local decoder, which takes no
+    /// hints at inference time; the API model uses both halves of it.
+    let transcription: TranscriptionContext
     /// Independent of `store` — stats hold no text, so they keep running for
     /// someone who has turned history off.
     let stats: StatsStore?
@@ -27,9 +30,10 @@ struct DictationPipeline {
         let started = Date()
         let raw: String
         do {
-            raw = try await transcriber.transcribe(samples)
+            raw = try await transcriber.transcribe(samples, context: transcription)
         } catch {
-            FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
+            let detail = (error as? TranscriberError)?.description ?? "\(error)"
+            FileHandle.standardError.write(Data("transcription failed: \(detail)\n".utf8))
             return nil
         }
 
