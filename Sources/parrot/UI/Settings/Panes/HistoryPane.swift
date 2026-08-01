@@ -255,9 +255,10 @@ private final class HistoryPaneData: ObservableObject {
 
     func reload(settings: Settings) {
         let store = TranscriptStore(settings: settings.history)
+        // `all()` is already newest first — take from the front, don't re-sort.
         let all = store.all()
         totalEntries = all.count
-        recent = Array(all.suffix(Self.recentCount).reversed())
+        recent = Array(all.prefix(Self.recentCount))
         summary = StatsStore(settings: settings.stats).summary(typingWpm: settings.stats.typingWpm)
     }
 
