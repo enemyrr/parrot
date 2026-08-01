@@ -6,6 +6,7 @@ import SwiftUI
 struct CleanupPane: View {
     @ObservedObject var store: SettingsStore
     @StateObject private var keys = APIKeyState()
+    @StateObject private var models = ModelListState()
 
     private var cleanup: CleanupSettings { store.settings.cleanup }
 
@@ -27,7 +28,26 @@ struct CleanupPane: View {
                 promptCard
             }
         }
-        .onAppear { keys.refresh() }
+        .onAppear {
+            keys.refresh()
+            loadModels()
+        }
+        .onChange(of: cleanup.enabled) { _, _ in loadModels() }
+        .onChange(of: cleanup.provider) { _, _ in loadModels() }
+    }
+
+    /// Only ask when there is something to ask on behalf of — no cleanup, or an
+    /// on-device provider, means no request.
+    private func loadModels() {
+        guard cleanup.enabled else { return }
+        // Empty means "whatever this provider defaults to", which reads in a
+        // menu as nothing being selected at all. Name the default the moment
+        // cleanup is switched on, so the picker always points at the model that
+        // will actually run — including for settings written before it existed.
+        if cleanup.model.isEmpty, let fallback = cleanup.provider.defaultModel {
+            store.settings.cleanup.model = fallback
+        }
+        models.load(cleanup.provider)
     }
 
     // MARK: - Mode
@@ -88,7 +108,7 @@ struct CleanupPane: View {
                             // The model name belongs to the vendor that was
                             // selected, so carrying it across would send OpenAI
                             // a Claude id and fail every request.
-                            store.settings.cleanup.model = ""
+                            store.settings.cleanup.model = provider.defaultModel ?? ""
                         }
                     }
                 }
@@ -98,6 +118,19 @@ struct CleanupPane: View {
 
     private static func isAvailable(_ provider: CleanupProvider) -> Bool {
         provider != .apple || AppleCleanupAvailability.isAvailable
+    }
+
+    /// The row's second line carries the state of the list, so the control
+    /// itself can stay one control wide whether it's a menu or a text field.
+    private var modelDescription: String {
+        if let error = models.error {
+            return "Couldn't load the list — \(error). Type an id instead."
+        }
+        if let account = cleanup.provider.keychainAccount,
+           !keys.source(for: account).hasKey {
+            return "Add a key to pick from the models your account can reach."
+        }
+        return "From your \(cleanup.provider.displayName) account. Leave on the default if unsure."
     }
 
     // MARK: - Apple
@@ -154,12 +187,14 @@ struct CleanupPane: View {
 
                 SettingsRow(
                     label: "Model",
-                    description: "Leave empty for the default."
+                    description: modelDescription
                 ) {
-                    CommittedText(text: $store.settings.cleanup.model) { draft in
-                        TextField(cleanup.provider.defaultModel ?? "", text: draft)
-                            .textFieldStyle(.roundedBorder)
-                    }
+                    ModelPicker(
+                        provider: cleanup.provider,
+                        model: $store.settings.cleanup.model,
+                        hasKey: keys.source(for: account).hasKey,
+                        list: models
+                    )
                 }
 
                 if cleanup.provider == .openai {
@@ -395,6 +430,143 @@ private struct CleanupModeCard: View {
         } else {
             Color.primary.opacity(selected ? 0.07 : 0.035)
         }
+    }
+}
+
+// MARK: - Model list
+
+/// Holds the provider's model list for the picker: fetched once per provider,
+/// kept across pane switches, retried by hand when it fails.
+@MainActor
+final class ModelListState: ObservableObject {
+    @Published private(set) var models: [CleanupModels.Model] = []
+    @Published private(set) var loading = false
+    @Published private(set) var error: String?
+
+    /// What `models` currently describes. Nil after a failure, so the next
+    /// attempt runs instead of being deduplicated away.
+    private var loaded: CleanupProvider?
+
+    func load(_ provider: CleanupProvider, force: Bool = false) {
+        guard provider.keychainAccount != nil else { return }
+        guard force || loaded != provider else { return }
+        loaded = provider
+        loading = true
+        error = nil
+
+        Task {
+            do {
+                let fetched = try await CleanupModels.fetch(for: provider)
+                // The user may have switched providers mid-flight; a stale list
+                // would be a list of the wrong vendor's models.
+                guard loaded == provider else { return }
+                models = fetched
+            } catch {
+                guard loaded == provider else { return }
+                models = []
+                self.error = "\(error)"
+                loaded = nil
+            }
+            loading = false
+        }
+    }
+}
+
+/// Picks the cleanup model from what the account can actually reach, with the
+/// text field kept as the way out — a model too new for the list endpoint, a
+/// gateway that doesn't implement it, or no key yet all end up here.
+private struct ModelPicker: View {
+    let provider: CleanupProvider
+    @Binding var model: String
+    let hasKey: Bool
+    @ObservedObject var list: ModelListState
+
+    /// Chosen from the menu rather than stored; the NUL prefix keeps it from
+    /// colliding with any real model id.
+    private static let customTag = "\u{0}custom"
+
+    @State private var typing = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if usesTextField {
+                CommittedText(text: $model) { draft in
+                    TextField(provider.defaultModel ?? "", text: draft)
+                        .textFieldStyle(.roundedBorder)
+                }
+            } else {
+                Picker("", selection: selection) { options }
+                    .labelsHidden()
+            }
+
+            if list.loading {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 14)
+            } else if list.error != nil {
+                Button {
+                    list.load(provider, force: true)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Try loading the model list again")
+            } else if typing, !list.models.isEmpty {
+                Button {
+                    typing = false
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+                .buttonStyle(.borderless)
+                .help("Choose from your account's models")
+            }
+        }
+    }
+
+    private var usesTextField: Bool {
+        typing || !hasKey || list.error != nil
+    }
+
+    /// A picker with no matching tag shows an empty menu button and refuses to
+    /// look selected however many times you pick something. Settings written
+    /// before the default was seeded still hold an empty string, so resolve it
+    /// here too rather than trusting the store to have been through `loadModels`.
+    private var selected: String {
+        model.isEmpty ? (provider.defaultModel ?? "") : model
+    }
+
+    private var selection: Binding<String> {
+        Binding(
+            get: { selected },
+            set: { new in
+                if new == Self.customTag {
+                    typing = true
+                } else {
+                    model = new
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var options: some View {
+        // The selected model always has a row of its own, whether the list has
+        // arrived yet, is missing it because the account no longer offers it,
+        // or never had it because it was typed in by hand.
+        if !list.models.contains(where: { $0.id == selected }) {
+            Text(selected).tag(selected)
+            Divider()
+        }
+
+        ForEach(list.models) { model in
+            Text(model.displayName).tag(model.id)
+        }
+
+        if !list.models.isEmpty {
+            Divider()
+        }
+        Text("Custom…").tag(Self.customTag)
     }
 }
 

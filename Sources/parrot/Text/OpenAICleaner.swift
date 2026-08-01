@@ -9,7 +9,7 @@ struct OpenAICleaner: TextCleaner {
             : "openai (\(model), \(reasoningEffort) reasoning)"
     }
 
-    static let defaultModel = "gpt-5-mini"
+    static let defaultModel = "gpt-5.6-luna"
 
     private let model: String
     /// "minimal" | "low" | "medium" | "high"; empty means the model's default.

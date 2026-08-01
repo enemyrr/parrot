@@ -16,6 +16,20 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "TOMLDecoder", package: "TOMLDecoder"),
+            ],
+            linkerSettings: [
+                // SwiftPM stamps the SDK version in LC_BUILD_VERSION as the
+                // deployment target, so the binary claims it was built against
+                // the macOS 14 SDK. AppKit reads that to decide which design
+                // system to serve, and hands a pre-Tahoe app the old switches
+                // and sliders. Say 26 so Liquid Glass applies on Tahoe while
+                // the deployment target stays at 14.
+                .unsafeFlags([
+                    "-Xlinker", "-platform_version",
+                    "-Xlinker", "macos",
+                    "-Xlinker", "14.0",
+                    "-Xlinker", "26.0",
+                ])
             ]
         ),
         .testTarget(
