@@ -46,7 +46,89 @@ Only a notarized build opens on someone else's Mac without Gatekeeper blocking i
    - **Double-tap `fn`** — hands-free. Recording stays on; tap once more to stop.
 4. **The transcript types itself in at the cursor.** A small pill at the bottom of the screen shows the mic is hot; in hands-free mode it also shows a lock.
 
-Press **Escape** while recording to throw the capture away.
+Press **Escape** while recording to throw the capture away. If you press an
+ordinary shortcut while holding a bare modifier — `⌃C` while `⌃` is your squawk
+key — the recording is thrown away too, so your shortcuts keep working.
+
+## Squawk
+
+Dictation types what you say. **Squawk answers for you.**
+
+Hold **`⌃`** instead of `fn`, and what you say becomes an instruction rather
+than text:
+
+> *"answer this, say ten o'clock works"*
+> *"rewrite this in a friendlier tone"*
+> *"reply that we can't make the deadline, and offer the fifteenth"*
+
+It reads the app you're in — the thread you're looking at, the draft you've
+started, whatever you've selected — and writes the answer at your cursor. If you
+had text selected, the answer replaces it; otherwise it goes in at the cursor.
+
+The point is that **you** decide the substance. Other tools guess what you meant
+and get it wrong the moment a question has two possible answers; here you say
+which one, in three words, and it writes the rest.
+
+The pill tells the two apart: dictation is a scrolling bar meter in cool blue,
+squawk is a wave with a `✦` in warm amber.
+
+Squawk is **off by default**. Turn it on in the **Keys** tab; pick the model in
+the **Squawk** tab.
+
+### What it can see
+
+Only the app in front, and only when you're holding the key. In order:
+
+1. Your selection, if there is one.
+2. The field the cursor is in.
+3. The readable text of the focused window, filtered and capped.
+
+Password managers, the login window, and any secure text field are never read —
+that isn't configurable. You can exclude any other app by bundle id.
+
+To see exactly what would be sent, use the **Show me what you'd send** button in
+the Squawk tab, or:
+
+```sh
+parrot context            # what squawk would read from the app in front
+parrot context --app Mail # ...from a named app, without switching to it
+parrot context --tree     # the raw accessibility tree, for tuning
+```
+
+Browsers and Electron apps (Chrome, Slack, VS Code, Discord) build an
+accessibility tree only when asked. parrot asks — once per app, and never with
+the flag that disturbs a field you're typing in. You can turn that off, at the
+cost of those apps returning nothing.
+
+### Telling it who you are
+
+Three layers, all editable in the Squawk tab:
+
+- **Base prompt** — the rules of the mode. What "rewrite this" means, what
+  "answer this" means, that only the text comes back.
+- **About you** — "I'm Andreas, I run a staffing company, I sign off with just
+  my first name, I write Swedish with Swedish colleagues." Goes into every
+  squawk.
+- **Per-app instructions** — Mail gets a greeting and a sign-off; Messages gets
+  one lowercase line; Slack gets a short paragraph. First match wins.
+
+You can run one without talking, which is also how you tune a prompt:
+
+```sh
+parrot squawk --dry-run "answer this, ten o'clock works"
+parrot squawk --show-prompt "rewrite this"     # the exact prompt that gets sent
+```
+
+### Models
+
+Squawk and cleanup pick their models independently — cleanup wants something
+fast that fixes punctuation, squawk wants something that can write.
+
+| Provider | |
+|---|---|
+| **Apple** | On-device. The screen contents never leave the Mac. Weakest writer of the three, needs no key. The default. |
+| **Anthropic** | Claude, over the API. Needs a key. |
+| **OpenAI** | GPT, over the API. Needs a key. |
 
 That's it. There is no record button, no stop button, no "send" — `fn` is the whole interface.
 
@@ -58,7 +140,9 @@ Everything lives in one window — `parrot settings`, or **Settings…** in the 
 
 | Tab | What's in it |
 |---|---|
-| **General** | The push-to-talk key, hands-free timings, spoken languages, start-at-login |
+| **General** | Spoken languages, start-at-login, where the log lives |
+| **Keys** | Both hotkeys — dictation and squawk — and the hands-free timings |
+| **Squawk** | The model behind squawk, what it knows about you, per-app instructions, what it may read |
 | **Models** | Which model, download progress, size on disk, delete |
 | **Cleanup** | Raw vs cleaned, provider, prompt |
 | **Dictionary** | Vocabulary and find → replace rules |

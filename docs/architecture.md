@@ -3,7 +3,7 @@
 ## Goals
 
 1. **CLI executable.** Single binary, launched from the terminal. No dock icon. (Originally "no settings window" too — see *Revisited cuts* below; there is one now, and it is where configuration lives.)
-2. **Push-to-talk, with a hands-free escape hatch.** Hold Fn and release; or double-tap Fn to keep recording without holding.
+2. **Push-to-talk, with a hands-free escape hatch.** Hold Fn and release; or double-tap Fn to keep recording without holding. A second key (⌃) runs the same gesture in *squawk* mode — see *On squawk* below.
 3. **Minimal recording feedback.** A small floating pill at the bottom of the screen while recording, so the user knows the mic is hot. Click-through, borderless, hidden when idle.
 4. **Transcription is strictly on-device.** Audio never leaves the machine, on any code path, in any configuration.
 5. **Pluggable engines.** Parakeet today behind a `Transcriber` protocol; another engine is one conformance plus one registry entry.
@@ -14,8 +14,9 @@
 - Cross-platform (macOS only)
 - Dock icon (the daemon runs as an accessory). *Settings window and preferences UI were on this list and are no longer — see* Revisited cuts.
 - **Cloud transcription.** Audio is never uploaded. (Text post-processing is a separate, opt-in thing — see below.)
-- Summarization, agents, chat
+- Agents, chat, tool use. *Single-shot text generation against what is on screen is no longer on this list — see* On squawk.
 - Speaker diarization, meeting recording, semantic search
+- Reading the screen when squawk is off, or reading any app that isn't in front
 
 ## On text post-processing
 
@@ -26,6 +27,58 @@ Transcription is on-device, full stop. Text *cleanup* — fixing punctuation and
 - A cloud provider (Anthropic or OpenAI) is available but must be chosen explicitly in the Cleanup tab, with a key the user stores themselves.
 
 So the on-device promise holds for audio unconditionally, and for text unless the user opts out of it deliberately. This is a deliberate relaxation of the original "no AI post-processing" non-goal: raw ASR output has no sentence breaks and keeps every "um", and the alternative was making every user fix that by hand.
+
+## On squawk
+
+Squawk is the second thing the hotkey can do: instead of typing what you said,
+it treats what you said as an instruction, reads the app you are in, and writes
+the answer at the cursor. "Answer this, ten o'clock works." "Rewrite this,
+friendlier."
+
+This is a real expansion of scope, and it deserves to be named as one. It is
+the first path that reads anything other than the microphone, and — unless the
+on-device provider is chosen — the first that sends anything about *other apps*
+off the machine. Three things keep it honest:
+
+- **Off by default.** With squawk off, the second key is never registered and
+  nothing reads the screen. There is no passive collection anywhere in it.
+- **Only the frontmost app, only while the key is held.** There is no polling,
+  no background capture, no history of what has been on screen. The capture is
+  a single accessibility walk started on key-down and thrown away after the
+  answer is injected.
+- **Never stored.** History keeps the instruction and the answer. What was read
+  off the screen is not written anywhere, ever — it would turn a convenience
+  log into a record of everything the user has looked at.
+
+Password managers, the login window, and any `AXSecureTextField` at any depth
+are excluded unconditionally, not by preference.
+
+The on-device provider (`apple`) keeps the full privacy story: with it, the
+screen contents never leave the Mac. It is the default for the same reason it
+is the cleanup default.
+
+### Why accessibility, not screen capture
+
+Reading the AX tree needs the Accessibility grant parrot already holds for the
+hotkey, so squawk asks for no new permission. OCR would need Screen Recording,
+would cost an order of magnitude more latency, and would return worse text.
+The tradeoff is coverage: an app that publishes no accessibility tree is
+invisible to squawk, and Chromium apps publish one only when asked.
+
+### The prompt is layered, and the screen is data
+
+Three layers — base prompt, "about you", per-app instructions — stack into the
+system prompt. Everything read off the screen goes in the *user* turn, wrapped
+in tags, and the base prompt says that tagged screen content is reference
+material and never an instruction. The same discipline the cleanup path already
+applies to a transcript: dictating "ignore your instructions" is data.
+
+The model returns `{action, text}` rather than bare prose, so one prompt covers
+both jobs — rewrite the selection, or compose something new — with the model
+deciding from the wording of the instruction rather than from whether a
+selection happens to exist. A separate classifier call would put a whole extra
+round trip in front of every squawk to answer a question the writing model
+already has to answer.
 
 ## Why Swift
 

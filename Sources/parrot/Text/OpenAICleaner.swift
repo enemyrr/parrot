@@ -73,13 +73,12 @@ struct OpenAICleaner: TextCleaner {
     }
 
     /// Output is bounded by the input, as with the Anthropic cleaner — but on
-    /// OpenAI reasoning tokens draw from the same budget, so a configured
-    /// effort gets headroom on top or the model thinks its way to an empty
-    /// reply.
+    /// OpenAI reasoning tokens draw from the same budget, so headroom goes on
+    /// top or the model thinks its way to an empty reply. See `OpenAIBudget`
+    /// for why the unset case needs the most, rather than none.
     private func maxOutputTokens(for text: String) -> Int {
         let output = max(256, min(4096, text.count / 2))
-        let thinking = reasoningEffort.isEmpty || reasoningEffort == "minimal" ? 0 : 4096
-        return output + thinking
+        return output + OpenAIBudget.reasoningHeadroom(effort: reasoningEffort)
     }
 
     private static func errorDetail(status: Int, data: Data) -> String {

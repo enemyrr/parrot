@@ -86,7 +86,7 @@ private struct CheckRow: View {
             case .fnKey:
                 Button("Open Keyboard") { PermissionActions.openKeyboardSettings() }
                     .controlSize(.small)
-            case .model, .languages, .cleanup:
+            case .model, .languages, .cleanup, .squawk:
                 EmptyView()
             }
         }

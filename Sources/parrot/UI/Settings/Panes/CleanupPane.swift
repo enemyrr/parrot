@@ -98,7 +98,7 @@ struct CleanupPane: View {
         SettingsCard(header: "Provider") {
             SettingsCustomRow(verticalPadding: 12) {
                 HStack(spacing: 8) {
-                    ForEach(CleanupProvider.allCases) { provider in
+                    ForEach(LLMProvider.allCases) { provider in
                         ProviderOption(
                             provider: provider,
                             selected: cleanup.provider == provider,
@@ -116,7 +116,7 @@ struct CleanupPane: View {
         }
     }
 
-    private static func isAvailable(_ provider: CleanupProvider) -> Bool {
+    private static func isAvailable(_ provider: LLMProvider) -> Bool {
         provider != .apple || AppleCleanupAvailability.isAvailable
     }
 
@@ -445,9 +445,9 @@ final class ModelListState: ObservableObject {
 
     /// What `models` currently describes. Nil after a failure, so the next
     /// attempt runs instead of being deduplicated away.
-    private var loaded: CleanupProvider?
+    private var loaded: LLMProvider?
 
-    func load(_ provider: CleanupProvider, force: Bool = false) {
+    func load(_ provider: LLMProvider, force: Bool = false) {
         guard provider.keychainAccount != nil else { return }
         guard force || loaded != provider else { return }
         loaded = provider
@@ -475,8 +475,10 @@ final class ModelListState: ObservableObject {
 /// Picks the cleanup model from what the account can actually reach, with the
 /// text field kept as the way out — a model too new for the list endpoint, a
 /// gateway that doesn't implement it, or no key yet all end up here.
-private struct ModelPicker: View {
-    let provider: CleanupProvider
+/// Shared with the Squawk pane: both panes pick an API model the same way, and
+/// a second copy would drift the moment one of them gained a fix.
+struct ModelPicker: View {
+    let provider: LLMProvider
     @Binding var model: String
     let hasKey: Bool
     @ObservedObject var list: ModelListState
@@ -572,8 +574,9 @@ private struct ModelPicker: View {
 
 // MARK: - Provider option
 
-private struct ProviderOption: View {
-    let provider: CleanupProvider
+/// Shared with the Squawk pane.
+struct ProviderOption: View {
+    let provider: LLMProvider
     let selected: Bool
     let available: Bool
     let select: () -> Void

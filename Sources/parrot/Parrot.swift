@@ -11,7 +11,7 @@ struct Parrot: ParsableCommand {
             Run.self, Start.self, Stop.self, Restart.self, Status.self, Logs.self,
             SettingsCommand.self, Setup.self, Doctor.self, Models.self,
             History.self, Stats.self, Key.self, Cleanup.self, Install.self,
-            OverlayPreview.self,
+            OverlayPreview.self, ContextCommand.self, SquawkCommand.self,
         ],
         defaultSubcommand: Run.self
     )
@@ -494,8 +494,97 @@ struct Key: ParsableCommand {
 struct Cleanup: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage the optional transcript cleanup pass.",
-        subcommands: [SetKey.self, ClearKey.self]
+        subcommands: [Run.self, SetKey.self, ClearKey.self]
     )
+
+    /// `parrot cleanup run "some rambling text"` — the cleanup pass on demand.
+    ///
+    /// Cleanup only ever ran inside a dictation, so the only way to find out it
+    /// was failing was to notice that transcripts had stopped being cleaned.
+    /// This says so directly, and names the reason when it doesn't work.
+    struct Run: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "run",
+            abstract: "Run the cleanup pass on some text, and say what happened."
+        )
+
+        @Argument(help: "The text to clean. Reads stdin when omitted.")
+        var text: String?
+
+        @Option(name: .long, help: "Override the provider: apple, anthropic or openai.")
+        var provider: String?
+
+        @Option(name: .long, help: "Override the model id.")
+        var model: String?
+
+        func run() throws {
+            var settings = SettingsStore.current().cleanup
+            if let provider {
+                guard let parsed = LLMProvider(rawValue: provider) else {
+                    throw ValidationError(
+                        "Unknown provider '\(provider)'. Use apple, anthropic or openai."
+                    )
+                }
+                settings.provider = parsed
+                settings.model = ""
+            }
+            if let model { settings.model = model }
+
+            let input = text ?? String(
+                data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8
+            ) ?? ""
+            let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw ValidationError("Nothing to clean.")
+            }
+
+            let cleaner: TextCleaner
+            switch makeCleaner(for: settings) {
+            case .success(let made): cleaner = made
+            case .failure(let error):
+                print("Can't run: \(error)")
+                throw ExitCode(1)
+            }
+
+            let wordlist = Wordlist(settings: SettingsStore.current().wordlist)
+            let context = CleanupContext(
+                vocabulary: wordlist.vocabulary,
+                languages: LanguageSelection.displayNames(SettingsStore.current().languages)
+            )
+
+            print("provider  \(cleaner.name)")
+            print("in        \(trimmed.count) chars, "
+                + "\(trimmed.split(whereSeparator: \.isWhitespace).count) words")
+            print("")
+
+            let started = Date()
+            let result = runBlocking { () -> Result<String, Error> in
+                do { return .success(try await cleaner.clean(trimmed, context: context)) } catch {
+                    return .failure(error)
+                }
+            }
+
+            switch result {
+            case .failure(let error):
+                print("✗ \((error as? CleanerError)?.description ?? "\(error)")")
+                print("\nThe dictation would have kept the raw transcript.")
+                throw ExitCode(1)
+            case .success(let cleaned):
+                let elapsed = Date().timeIntervalSince(started)
+                // The same check the daemon applies before letting cleaned text
+                // become keystrokes.
+                let accepted = CleanupGuard.accept(original: trimmed, cleaned: cleaned)
+                print(String(format: "%@ %.2fs", accepted ? "✓" : "✗ rejected by the guard —", elapsed))
+                print("")
+                print(cleaned)
+                if !accepted {
+                    print("\nToo far from the input's length to be a cleanup; "
+                        + "the dictation would have kept the raw transcript.")
+                    throw ExitCode(1)
+                }
+            }
+        }
+    }
 
     /// Kept as an alias of `parrot key set`. Someone has this in a setup script
     /// or a shell alias, and breaking it to rename a command isn't a trade

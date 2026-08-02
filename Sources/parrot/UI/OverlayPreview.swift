@@ -6,28 +6,28 @@ import Foundation
 ///
 /// The visualisers are hard to judge against synthetic audio — you need to see
 /// how they respond to your own cadence, plosives and pauses. This opens the
-/// pill, feeds it real levels, and lets you flip between styles in place so the
+/// pill, feeds it real levels, and lets you flip between modes in place so the
 /// comparison is against the same voice rather than the same recording.
 struct OverlayPreview: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "overlay-preview",
         abstract: "Preview the recording overlay against your live microphone.",
         discussion: """
-            Press 1/2 to switch style (bars / line), +/- to trim sensitivity, \
-            l to toggle the hands-free lock, t to preview the transcribing \
-            spinner, q to quit.
+            Press 1/2 to switch mode (dictate / squawk), +/- to trim \
+            sensitivity, l to toggle the hands-free lock, t to preview the \
+            transcribing spinner, q to quit.
             """
     )
 
-    @Option(name: .long, help: "Style to start on: bars or line.")
-    var style: String = "bars"
+    @Option(name: .long, help: "Mode to start on: dictate or squawk.")
+    var mode: String = "dictate"
 
     @Option(name: .long, help: "Meter sensitivity to start on (0.25–3.0).")
     var sensitivity: Double?
 
     func run() throws {
-        guard let initial = OverlayStyle(rawValue: style) else {
-            throw ValidationError("Unknown style '\(style)'. Use bars or line.")
+        guard let initial = DictationMode(rawValue: mode) else {
+            throw ValidationError("Unknown mode '\(mode)'. Use dictate or squawk.")
         }
         // Start from the user's own settings unless overridden, so what you see
         // here is what the daemon will actually do.
@@ -38,7 +38,7 @@ struct OverlayPreview: ParsableCommand {
 
         let capture = AudioCapture()
         let overlay = MainActor.assumeIsolated {
-            RecordingOverlay(style: initial, sensitivity: startSensitivity)
+            RecordingOverlay(sensitivity: startSensitivity)
         }
         capture.onLevel = { level in overlay.pushLevel(level) }
 
@@ -49,17 +49,22 @@ struct OverlayPreview: ParsableCommand {
             throw ExitCode(1)
         }
 
-        MainActor.assumeIsolated { overlay.show(.recording) }
+        // Mode and state are both live knobs here, and `show` takes them
+        // together — so the one the keypress doesn't change has to be carried.
+        var mode = initial
+        var state = RecordingOverlay.State.recording
+
+        MainActor.assumeIsolated { overlay.show(state, mode: mode) }
         print(Self.banner(initial, startSensitivity))
 
         readKeys { key in
             MainActor.assumeIsolated {
                 switch key {
-                case "1": overlay.setStyle(.bars); print("→ bars")
-                case "2": overlay.setStyle(.line); print("→ line")
-                case "l": overlay.show(.latched); print("→ latched")
-                case "r": overlay.show(.recording); print("→ recording")
-                case "t": overlay.show(.transcribing); print("→ transcribing")
+                case "1": mode = .dictate; overlay.show(state, mode: mode); print("→ dictate")
+                case "2": mode = .squawk; overlay.show(state, mode: mode); print("→ squawk")
+                case "l": state = .latched; overlay.show(state, mode: mode); print("→ latched")
+                case "r": state = .recording; overlay.show(state, mode: mode); print("→ recording")
+                case "t": state = .transcribing; overlay.show(state, mode: mode); print("→ transcribing")
                 case "d":
                     Self.toggleReadout(overlay)
                 case "+", "=", "-", "_":
@@ -108,11 +113,11 @@ struct OverlayPreview: ParsableCommand {
         readoutTimer = timer
     }
 
-    private static func banner(_ style: OverlayStyle, _ sensitivity: Double) -> String {
+    private static func banner(_ mode: DictationMode, _ sensitivity: Double) -> String {
         """
-        Listening — talk at it. Style '\(style.rawValue)', \
+        Listening — talk at it. Mode '\(mode.rawValue)', \
         sensitivity \(String(format: "%.2f", sensitivity)).
-          1 bars   2 line
+          1 dictate   2 squawk
           r recording   l latched   t transcribing
           + / -  sensitivity (higher picks up quieter speech)
           d live level readout

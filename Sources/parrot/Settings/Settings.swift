@@ -15,6 +15,7 @@ struct Settings: Codable, Equatable {
     var languages: [String]
     var hotkey: Hotkey
     var latch: LatchSettings
+    var squawk: SquawkSettings
     var cleanup: CleanupSettings
     var wordlist: WordlistSettings
     var history: HistorySettings
@@ -26,6 +27,7 @@ struct Settings: Codable, Equatable {
         languages: [],
         hotkey: .fn,
         latch: .default,
+        squawk: .default,
         cleanup: .default,
         wordlist: .default,
         history: .default,
@@ -43,6 +45,7 @@ struct Settings: Codable, Equatable {
         languages = try c.decodeIfPresent([String].self, forKey: .languages) ?? d.languages
         hotkey = try c.decodeIfPresent(Hotkey.self, forKey: .hotkey) ?? d.hotkey
         latch = try c.decodeIfPresent(LatchSettings.self, forKey: .latch) ?? d.latch
+        squawk = try c.decodeIfPresent(SquawkSettings.self, forKey: .squawk) ?? d.squawk
         cleanup = try c.decodeIfPresent(CleanupSettings.self, forKey: .cleanup) ?? d.cleanup
         wordlist = try c.decodeIfPresent(WordlistSettings.self, forKey: .wordlist) ?? d.wordlist
         history = try c.decodeIfPresent(HistorySettings.self, forKey: .history) ?? d.history
@@ -55,6 +58,7 @@ struct Settings: Codable, Equatable {
         languages: [String],
         hotkey: Hotkey,
         latch: LatchSettings,
+        squawk: SquawkSettings,
         cleanup: CleanupSettings,
         wordlist: WordlistSettings,
         history: HistorySettings,
@@ -65,6 +69,7 @@ struct Settings: Codable, Equatable {
         self.languages = languages
         self.hotkey = hotkey
         self.latch = latch
+        self.squawk = squawk
         self.cleanup = cleanup
         self.wordlist = wordlist
         self.history = history
@@ -113,7 +118,263 @@ struct LatchSettings: Codable, Equatable {
     }
 }
 
-enum CleanupProvider: String, Codable, CaseIterable, Identifiable {
+/// What a recording is *for*. Chosen by which hotkey started it, and carried
+/// all the way through to the pill so the two are never mistaken for each other.
+enum DictationMode: String, Codable, Equatable, CaseIterable {
+    /// Speech becomes text, verbatim. The original parrot.
+    case dictate
+    /// Speech is an instruction. What lands at the cursor is a model's answer,
+    /// written against what's on screen.
+    case squawk
+
+    var displayName: String {
+        switch self {
+        case .dictate: return "Dictation"
+        case .squawk: return "Squawk"
+        }
+    }
+}
+
+/// The second hotkey, and what it does.
+///
+/// Off by default, and deliberately so: squawk is the one path that reads the
+/// screen. Nothing about it runs — no context capture, no second key registered
+/// — until someone turns it on.
+struct SquawkSettings: Codable, Equatable {
+    var enabled: Bool
+    /// Held or double-tapped exactly like the dictation key. Must resolve to
+    /// something other than `Settings.hotkey`; see `isUsable(alongside:)`.
+    var hotkey: Hotkey
+    /// Independent of the cleanup provider on purpose: cleanup wants something
+    /// fast and cheap that fixes punctuation, squawk wants something that can
+    /// write. They are rarely the same model.
+    var provider: LLMProvider
+    /// Empty means the provider's own default.
+    var model: String
+    var reasoningEffort: ReasoningEffort
+    /// Longer than cleanup's, because this one writes rather than repairs.
+    var timeoutS: Double
+    /// A runaway answer becomes a runaway paste. Characters, not tokens —
+    /// what matters is how much text lands in the field.
+    var maxCharacters: Int
+    /// Empty means the built-in base prompt.
+    var prompt: String
+    /// Who you are, in your words. Injected into every squawk.
+    var about: String
+    /// Per-app instructions, first match wins.
+    var profiles: [AppProfile]
+    /// Bundle IDs never read from, on top of the ones that are always excluded.
+    var excludedBundleIDs: [String]
+    var context: ContextSettings
+
+    static let `default` = SquawkSettings(
+        enabled: false,
+        hotkey: .control,
+        // Matches the cleanup default, and for the same reason: on-device means
+        // the screen contents never leave the Mac. It is the weakest writer of
+        // the three, and it is the only one that needs no key and no decision.
+        provider: .apple,
+        model: "",
+        reasoningEffort: .unset,
+        timeoutS: 25,
+        maxCharacters: 4000,
+        prompt: "",
+        about: "",
+        profiles: AppProfile.starters,
+        excludedBundleIDs: [],
+        context: .default
+    )
+
+    init(
+        enabled: Bool,
+        hotkey: Hotkey,
+        provider: LLMProvider,
+        model: String,
+        reasoningEffort: ReasoningEffort,
+        timeoutS: Double,
+        maxCharacters: Int,
+        prompt: String,
+        about: String,
+        profiles: [AppProfile],
+        excludedBundleIDs: [String],
+        context: ContextSettings
+    ) {
+        self.enabled = enabled
+        self.hotkey = hotkey
+        self.provider = provider
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+        self.timeoutS = timeoutS
+        self.maxCharacters = maxCharacters
+        self.prompt = prompt
+        self.about = about
+        self.profiles = profiles
+        self.excludedBundleIDs = excludedBundleIDs
+        self.context = context
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = SquawkSettings.default
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        hotkey = try c.decodeIfPresent(Hotkey.self, forKey: .hotkey) ?? d.hotkey
+        provider = try c.decodeIfPresent(LLMProvider.self, forKey: .provider) ?? d.provider
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
+        reasoningEffort = try c.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort)
+            ?? d.reasoningEffort
+        timeoutS = try c.decodeIfPresent(Double.self, forKey: .timeoutS) ?? d.timeoutS
+        maxCharacters = try c.decodeIfPresent(Int.self, forKey: .maxCharacters) ?? d.maxCharacters
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? d.prompt
+        about = try c.decodeIfPresent(String.self, forKey: .about) ?? d.about
+        profiles = try c.decodeIfPresent([AppProfile].self, forKey: .profiles) ?? d.profiles
+        excludedBundleIDs = try c.decodeIfPresent([String].self, forKey: .excludedBundleIDs)
+            ?? d.excludedBundleIDs
+        context = try c.decodeIfPresent(ContextSettings.self, forKey: .context) ?? d.context
+    }
+
+    /// The profile for a bundle ID, if one claims it.
+    func profile(for bundleID: String?) -> AppProfile? {
+        guard let bundleID else { return nil }
+        return profiles.first { $0.enabled && $0.matches(bundleID) }
+    }
+
+    func isExcluded(bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return excludedBundleIDs.contains { $0.caseInsensitiveCompare(bundleID) == .orderedSame }
+    }
+
+    /// Two hotkeys that are the same key can't be told apart, and the monitor
+    /// would hand every press to whichever binding it looked at first. Checked
+    /// here rather than in the pane so the daemon refuses it too.
+    func isUsable(alongside dictation: Hotkey) -> Bool {
+        hotkey.isUsable && hotkey != dictation
+    }
+}
+
+/// How an app should be written for.
+///
+/// The same instruction produces a very different right answer in Mail and in
+/// Messages, and neither the model nor a global prompt can know which one you
+/// are in. This is the smallest thing that fixes it.
+struct AppProfile: Codable, Equatable, Identifiable {
+    var id: UUID
+    /// Shown in the settings list, and named to the model as the thing it is
+    /// writing for.
+    var name: String
+    /// Bundle IDs this claims. Matched case-insensitively, with a trailing `*`
+    /// allowed so `com.google.Chrome*` catches the helper processes too.
+    var bundleIDs: [String]
+    var instructions: String
+    var enabled: Bool
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        bundleIDs: [String],
+        instructions: String,
+        enabled: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.bundleIDs = bundleIDs
+        self.instructions = instructions
+        self.enabled = enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "App"
+        bundleIDs = try c.decodeIfPresent([String].self, forKey: .bundleIDs) ?? []
+        instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
+
+    func matches(_ bundleID: String) -> Bool {
+        bundleIDs.contains { pattern in
+            guard pattern.hasSuffix("*") else {
+                return pattern.caseInsensitiveCompare(bundleID) == .orderedSame
+            }
+            let prefix = String(pattern.dropLast())
+            return bundleID.lowercased().hasPrefix(prefix.lowercased())
+        }
+    }
+
+    /// Shipped switched on, because an empty profile list makes squawk look
+    /// like it ignores the app it is in — and these four are where the
+    /// difference is most obvious.
+    static let starters: [AppProfile] = [
+        AppProfile(
+            name: "Mail",
+            bundleIDs: ["com.apple.mail", "com.readdle.smartemail-Mac", "com.microsoft.Outlook"],
+            instructions: "Full sentences. Keep the greeting and sign off the way the thread "
+                + "does. Don't restate the question you're answering."
+        ),
+        AppProfile(
+            name: "Messages & chat",
+            bundleIDs: [
+                "com.apple.MobileSMS", "net.whatsapp.WhatsApp", "ru.keepcoder.Telegram",
+            ],
+            instructions: "One short message. No greeting, no sign-off, no subject line. "
+                + "Match the casing and punctuation of the conversation, including lowercase."
+        ),
+        AppProfile(
+            name: "Slack & Discord",
+            bundleIDs: ["com.tinyspeck.slackmacgap", "com.hnc.Discord"],
+            instructions: "Short and direct, one paragraph. No greeting. Threads are informal — "
+                + "write the way the channel does."
+        ),
+        AppProfile(
+            name: "Notes & documents",
+            bundleIDs: ["com.apple.Notes", "md.obsidian", "com.apple.TextEdit"],
+            instructions: "Prose or bullets, whichever the document already uses. No greeting "
+                + "and no sign-off — this is a document, not a message."
+        ),
+    ]
+}
+
+/// How much of the screen squawk is allowed to read.
+struct ContextSettings: Codable, Equatable {
+    /// Read the whole window, not just the selection and the focused field.
+    /// The thing that makes "answer this email" work without selecting it
+    /// first — and the thing to turn off if that is more than you want sent.
+    var readWindow: Bool
+    var maxCharacters: Int
+    /// Ask Chromium apps to build an accessibility tree. Off means browsers and
+    /// Electron apps return nothing; on has a known side effect with window
+    /// managers. See `ScreenReader`.
+    var enhanceChromium: Bool
+
+    static let `default` = ContextSettings(
+        readWindow: true,
+        maxCharacters: 6000,
+        enhanceChromium: true
+    )
+
+    init(readWindow: Bool, maxCharacters: Int, enhanceChromium: Bool) {
+        self.readWindow = readWindow
+        self.maxCharacters = maxCharacters
+        self.enhanceChromium = enhanceChromium
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ContextSettings.default
+        readWindow = try c.decodeIfPresent(Bool.self, forKey: .readWindow) ?? d.readWindow
+        maxCharacters = try c.decodeIfPresent(Int.self, forKey: .maxCharacters) ?? d.maxCharacters
+        enhanceChromium = try c.decodeIfPresent(Bool.self, forKey: .enhanceChromium)
+            ?? d.enhanceChromium
+    }
+
+    var limits: ScreenReader.Limits {
+        var limits = ScreenReader.Limits.default
+        limits.maxCharacters = maxCharacters
+        limits.enhanceChromium = enhanceChromium
+        return limits
+    }
+}
+
+enum LLMProvider: String, Codable, CaseIterable, Identifiable {
     case apple
     case anthropic
     case openai
@@ -173,7 +434,7 @@ enum ReasoningEffort: String, Codable, CaseIterable, Identifiable {
 
 struct CleanupSettings: Codable, Equatable {
     var enabled: Bool
-    var provider: CleanupProvider
+    var provider: LLMProvider
     /// API providers only; ignored by the on-device provider. Empty means the
     /// provider's own default so switching providers never sends the wrong
     /// vendor's model name.
@@ -197,7 +458,7 @@ struct CleanupSettings: Codable, Equatable {
 
     init(
         enabled: Bool,
-        provider: CleanupProvider,
+        provider: LLMProvider,
         model: String,
         reasoningEffort: ReasoningEffort,
         minWords: Int,
@@ -217,7 +478,7 @@ struct CleanupSettings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = CleanupSettings.default
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
-        provider = try c.decodeIfPresent(CleanupProvider.self, forKey: .provider) ?? d.provider
+        provider = try c.decodeIfPresent(LLMProvider.self, forKey: .provider) ?? d.provider
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
         reasoningEffort = try c.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort)
             ?? d.reasoningEffort
@@ -274,26 +535,14 @@ struct WordlistSettings: Codable, Equatable {
     }
 }
 
-/// How the recording pill visualises your voice.
-enum OverlayStyle: String, Codable, CaseIterable, Identifiable {
-    /// Scrolling bar meter — newest sample enters right and travels left.
-    case bars
-    /// Siri-style stroked wave that lies flat when silent.
-    case line
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .bars: return "Bars"
-        case .line: return "Wave"
-        }
-    }
-}
-
+/// The pill.
+///
+/// It used to carry a `style` the user picked. It no longer does: the
+/// visualiser is how you tell dictation from squawk at a glance, so it belongs
+/// to the mode rather than to taste. A stored `style` from an older build
+/// decodes to nothing and is dropped on the next write.
 struct OverlaySettings: Codable, Equatable {
     var enabled: Bool
-    var style: OverlayStyle
     /// Meter sensitivity. 1.0 is the default; higher lowers the noise floor so
     /// quieter mics and softer voices still fill the bars.
     ///
@@ -304,11 +553,10 @@ struct OverlaySettings: Codable, Equatable {
         didSet { sensitivity = Self.clampSensitivity(sensitivity) }
     }
 
-    static let `default` = OverlaySettings(enabled: true, style: .bars, sensitivity: 1)
+    static let `default` = OverlaySettings(enabled: true, sensitivity: 1)
 
-    init(enabled: Bool, style: OverlayStyle, sensitivity: Double) {
+    init(enabled: Bool, sensitivity: Double) {
         self.enabled = enabled
-        self.style = style
         self.sensitivity = Self.clampSensitivity(sensitivity)
     }
 
@@ -316,7 +564,6 @@ struct OverlaySettings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = OverlaySettings.default
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
-        style = try c.decodeIfPresent(OverlayStyle.self, forKey: .style) ?? d.style
         let raw = try c.decodeIfPresent(Double.self, forKey: .sensitivity) ?? d.sensitivity
         sensitivity = Self.clampSensitivity(raw)
     }

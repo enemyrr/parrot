@@ -188,9 +188,12 @@ private struct LegacyConfig: Decodable {
                 windowMs: latch?.windowMs ?? d.latch.windowMs,
                 maxSeconds: latch?.maxSeconds ?? d.latch.maxSeconds
             ),
+            // Squawk postdates the TOML config entirely — there is nothing to
+            // import, and it stays off until someone turns it on.
+            squawk: d.squawk,
             cleanup: CleanupSettings(
                 enabled: cleanup?.enabled ?? d.cleanup.enabled,
-                provider: cleanup?.provider.flatMap(CleanupProvider.init(rawValue:))
+                provider: cleanup?.provider.flatMap(LLMProvider.init(rawValue:))
                     ?? d.cleanup.provider,
                 model: cleanup?.model ?? d.cleanup.model,
                 reasoningEffort: cleanup?.reasoningEffort.flatMap(ReasoningEffort.init(rawValue:))
@@ -215,9 +218,11 @@ private struct LegacyConfig: Decodable {
                 enabled: stats?.enabled ?? d.stats.enabled,
                 typingWpm: stats?.typingWpm ?? d.stats.typingWpm
             ),
+            // `overlay.style` was a config key once. The pill's look now
+            // follows the mode rather than a preference, so an imported one is
+            // read and dropped.
             overlay: OverlaySettings(
                 enabled: d.overlay.enabled,
-                style: overlay?.style.flatMap(OverlayStyle.init(rawValue:)) ?? d.overlay.style,
                 sensitivity: overlay?.sensitivity ?? d.overlay.sensitivity
             )
         )

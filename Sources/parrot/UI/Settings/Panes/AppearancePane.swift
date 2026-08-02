@@ -34,26 +34,10 @@ struct AppearancePane: View {
             }
 
             if overlay.enabled {
-                styleCard
                 sensitivityCard
             }
         }
         .onDisappear(perform: stopPreview)
-    }
-
-    private var styleCard: some View {
-        SettingsCard(header: "Visualiser") {
-            SettingsCustomRow(verticalPadding: 12) {
-                HStack(spacing: 10) {
-                    ForEach(OverlayStyle.allCases) { style in
-                        StyleOption(style: style, selected: overlay.style == style) {
-                            store.settings.overlay.style = style
-                            syncPreview()
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private var sensitivityCard: some View {
@@ -119,7 +103,7 @@ struct AppearancePane: View {
     }
 
     private func startPreview() {
-        context.startOverlayPreview?(overlay.style, overlay.sensitivity)
+        context.startOverlayPreview?(overlay.sensitivity)
     }
 
     private func stopPreview() {
@@ -129,88 +113,6 @@ struct AppearancePane: View {
 
     private func syncPreview() {
         guard previewing else { return }
-        context.updateOverlayPreview?(overlay.style, overlay.sensitivity)
-    }
-}
-
-/// A style option that draws the thing it names, at pill scale.
-private struct StyleOption: View {
-    let style: OverlayStyle
-    let selected: Bool
-    let select: () -> Void
-
-    var body: some View {
-        Button(action: select) {
-            VStack(spacing: 9) {
-                ZStack {
-                    Capsule()
-                        .fill(Color.black.opacity(0.82))
-                        .frame(height: 34)
-                    sample
-                }
-                .frame(maxWidth: .infinity)
-
-                Text(style.displayName)
-                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.12) : SettingsPalette.keycapFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(
-                        selected ? Color.accentColor : SettingsPalette.keycapBorder,
-                        lineWidth: selected ? 1.5 : 0.5
-                    )
-            )
-        }
-        .buttonStyle(.plain)
-        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: selected)
-    }
-
-    /// A frozen frame of each visualiser rather than a live one: two animating
-    /// swatches side by side compete for attention, and the choice here is
-    /// between shapes, not between motions.
-    @ViewBuilder
-    private var sample: some View {
-        switch style {
-        case .bars:
-            HStack(spacing: 2) {
-                ForEach(Array(Self.barHeights.enumerated()), id: \.offset) { _, height in
-                    Capsule()
-                        .fill(OverlayPill.accent)
-                        .frame(width: 2, height: max(2, height * 18))
-                }
-            }
-        case .line:
-            WaveSample()
-                .stroke(OverlayPill.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .frame(width: 54, height: 18)
-        }
-    }
-
-    private static let barHeights: [CGFloat] = [
-        0.15, 0.3, 0.55, 0.85, 0.6, 0.35, 0.7, 1.0, 0.75, 0.4, 0.55, 0.3, 0.2, 0.12,
-    ]
-}
-
-private struct WaveSample: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let mid = rect.midY
-        for x in stride(from: 0.0, through: rect.width, by: 1) {
-            let u = x / rect.width
-            let taper = pow(sin(u * .pi), 0.8)
-            let y = mid + sin(u * .pi * 2 * 1.6) * (rect.height / 2 - 1) * taper
-            if x == 0 {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-        }
-        return path
+        context.updateOverlayPreview?(overlay.sensitivity)
     }
 }

@@ -24,14 +24,8 @@ final class RecordingOverlay {
     private var window: NSPanel?
     private let model = OverlayModel()
 
-    init(style: OverlayStyle = .bars, sensitivity: Double = 1) {
-        model.style = style
+    init(sensitivity: Double = 1) {
         model.sensitivity = Float(sensitivity)
-    }
-
-    /// Swap visualiser without tearing down the window — used by the preview.
-    func setStyle(_ style: OverlayStyle) {
-        model.style = style
     }
 
     /// Live sensitivity trim — used by the preview to dial in against a real mic.
@@ -46,8 +40,12 @@ final class RecordingOverlay {
         (model.lastDb, model.noiseFloorDb, model.floorDb, model.level)
     }
 
-    func show(_ state: State) {
+    func show(_ state: State, mode: DictationMode = .dictate) {
         ensureWindow()
+        // Set before the state so the first layout of an appearing pill is
+        // already wearing the right mode — switching it a tick later would read
+        // as the pill changing its mind.
+        model.mode = mode
         if state == .recording {
             model.reset()
         }
@@ -194,7 +192,9 @@ final class OverlayModel: ObservableObject {
     /// the instant the exit starts, so switching content on it swapped the
     /// spinner back to the waveform for the length of the collapse.
     var lastVisible: RecordingOverlay.State = .recording
-    @Published var style: OverlayStyle = .bars
+    /// Drives the visualiser, the accent and the glyph — the three things that
+    /// make the two modes unmistakable at a glance.
+    @Published var mode: DictationMode = .dictate
     /// Oldest sample first, so the newest lands on the right and the row
     /// travels right → left.
     @Published private(set) var history: [Float] = Array(repeating: 0, count: columns)
@@ -328,6 +328,7 @@ struct OverlayPill: View {
 
     @ViewBuilder
     private var content: some View {
+        let accent = OverlayPill.accent(model.mode)
         switch isHidden ? model.lastVisible : model.state {
         case .hidden, .recording:
             Waveform(model: model)
@@ -336,19 +337,28 @@ struct OverlayPill: View {
                 Waveform(model: model)
                 Image(systemName: "lock.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(OverlayPill.accent)
+                    .foregroundStyle(accent)
                     .transition(.blurReplace)
             }
         case .transcribing:
-            BusySpinner()
+            BusySpinner(accent: accent)
                 .frame(width: Waveform.size.width, height: Waveform.size.height)
                 .transition(.blurReplace)
         }
     }
 
-    /// Brightened from the old solid-pill blue — glass eats contrast.
-    static let accent = Color(red: 200/255, green: 222/255, blue: 255/255)
+    /// Brightened from the old solid-pill blue — glass eats contrast. Squawk
+    /// runs warm against it: the two pills have to be tellable apart in
+    /// peripheral vision, and hue carries further than shape does. With the
+    /// mode badge gone, colour and waveform are the whole distinction.
+    static func accent(_ mode: DictationMode) -> Color {
+        switch mode {
+        case .dictate: return Color(red: 200/255, green: 222/255, blue: 255/255)
+        case .squawk: return Color(red: 255/255, green: 214/255, blue: 160/255)
+        }
+    }
 }
+
 
 private extension View {
     /// Liquid Glass where the OS has it, a HUD vibrancy capsule everywhere else.
@@ -369,13 +379,15 @@ private extension View {
 /// Accent-coloured spinner — `ProgressView` renders as a grey system spinner
 /// here (`.tint` doesn't reach `NSProgressIndicator`) and clashes with the glass.
 private struct BusySpinner: View {
+    let accent: Color
+
     var body: some View {
         TimelineView(.animation) { context in
             let turns = context.date.timeIntervalSinceReferenceDate * 0.6
             Circle()
                 .trim(from: 0, to: 0.72)
                 .stroke(
-                    OverlayPill.accent,
+                    accent,
                     style: StrokeStyle(lineWidth: 2, lineCap: .round)
                 )
                 .rotationEffect(.degrees(turns.truncatingRemainder(dividingBy: 1) * 360))
@@ -398,8 +410,8 @@ private struct VibrancyBackdrop: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
-/// Dispatches to the configured visualiser. All three fill the same slot, so
-/// the pill keeps one shape whichever you pick.
+/// Dispatches to the mode's visualiser. Both fill the same slot, so the pill
+/// keeps one shape whichever is running.
 private struct Waveform: View {
     @ObservedObject var model: OverlayModel
 
@@ -407,9 +419,11 @@ private struct Waveform: View {
 
     var body: some View {
         Group {
-            switch model.style {
-            case .bars: TravellingBars(history: model.history)
-            case .line: SiriLine(level: model.level)
+            switch model.mode {
+            case .dictate:
+                TravellingBars(history: model.history, accent: OverlayPill.accent(.dictate))
+            case .squawk:
+                SiriLine(level: model.level, accent: OverlayPill.accent(.squawk))
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)
@@ -420,6 +434,7 @@ private struct Waveform: View {
 /// time rather than one number drawn N times. Newest is rightmost.
 private struct TravellingBars: View {
     let history: [Float]
+    let accent: Color
 
     private static let barWidth: CGFloat = 2
     private static let spacing: CGFloat = 2
@@ -428,7 +443,7 @@ private struct TravellingBars: View {
         HStack(spacing: Self.spacing) {
             ForEach(Array(history.enumerated()), id: \.offset) { _, level in
                 Capsule()
-                    .fill(OverlayPill.accent)
+                    .fill(accent)
                     // Animating height rather than scaleEffect(y:) keeps the
                     // round caps circular instead of squashing them.
                     .frame(
@@ -443,6 +458,7 @@ private struct TravellingBars: View {
 /// Two stroked waves that lie flat when silent and swell with your voice.
 private struct SiriLine: View {
     let level: Float
+    let accent: Color
 
     var body: some View {
         TimelineView(.animation) { context in
@@ -468,7 +484,7 @@ private struct SiriLine: View {
             }
             context.stroke(
                 path,
-                with: .color(OverlayPill.accent.opacity(opacity)),
+                with: .color(accent.opacity(opacity)),
                 style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
             )
         }

@@ -27,6 +27,7 @@ enum CheckKind: String, Equatable {
     case model
     case languages
     case cleanup
+    case squawk
 }
 
 struct Check: Identifiable, Equatable {
@@ -49,6 +50,7 @@ enum DoctorReport {
             checkModel(settings),
             checkLanguages(settings),
             checkCleanup(settings),
+            checkSquawk(settings),
         ]
     }
 
@@ -237,6 +239,38 @@ enum DoctorReport {
             return checkAPIKey(.anthropic)
         case .openai:
             return checkAPIKey(.openai)
+        }
+    }
+
+    /// Squawk is opt-in too, so "off" is a pass. Two ways for it to be on and
+    /// broken: a provider that can't run here, and a second hotkey that
+    /// collides with the first — the daemon drops the binding for that one, so
+    /// the feature is silently absent rather than visibly failing.
+    static func checkSquawk(_ settings: Settings) -> Check {
+        let name = "Squawk"
+        guard settings.squawk.enabled else {
+            return Check(kind: .squawk, name: name, status: .ok, remediation: nil)
+        }
+        guard settings.squawk.isUsable(alongside: settings.hotkey) else {
+            return Check(
+                kind: .squawk, name: name,
+                status: .warn("\(settings.squawk.hotkey.displayLabel) is already the dictation key"),
+                remediation: "Pick a different key in the Keys tab."
+            )
+        }
+        switch settings.squawk.provider {
+        case .apple:
+            guard let reason = AppleCleanupAvailability.unavailableReason else {
+                return Check(kind: .squawk, name: name, status: .ok, remediation: nil)
+            }
+            return Check(
+                kind: .squawk, name: name, status: .warn(reason),
+                remediation: "Switch to Anthropic or OpenAI in the Squawk tab."
+            )
+        case .anthropic:
+            return checkAPIKey(.anthropic, kind: .squawk, name: name)
+        case .openai:
+            return checkAPIKey(.openai, kind: .squawk, name: name)
         }
     }
 

@@ -20,7 +20,8 @@ final class SettingsCodingTests: XCTestCase {
         original.cleanup.reasoningEffort = .low
         original.wordlist.vocabulary = ["Vercel"]
         original.wordlist.replacements = [Replacement(from: "vercell", to: "Vercel")]
-        original.overlay.style = .line
+        original.squawk.enabled = true
+        original.squawk.hotkey = .control
 
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Settings.self, from: data)
@@ -183,7 +184,6 @@ final class LegacyConfigMigrationTests: XCTestCase {
         XCTAssertEqual(settings.history.maxEntries, 99)
         XCTAssertFalse(settings.stats.enabled)
         XCTAssertEqual(settings.stats.typingWpm, 65)
-        XCTAssertEqual(settings.overlay.style, .line)
         XCTAssertEqual(settings.overlay.sensitivity, 1.8, accuracy: 1e-9)
     }
 

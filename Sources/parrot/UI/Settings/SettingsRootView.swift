@@ -3,6 +3,8 @@ import SwiftUI
 /// The sections in the sidebar, in order.
 enum SettingsPane: String, CaseIterable, Identifiable {
     case general
+    case keys
+    case squawk
     case models
     case cleanup
     case dictionary
@@ -17,6 +19,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
+        case .keys: return "Keys"
+        case .squawk: return "Squawk"
         case .models: return "Models"
         case .cleanup: return "Cleanup"
         case .dictionary: return "Dictionary"
@@ -31,8 +35,10 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "slider.horizontal.3"
+        case .keys: return "keyboard"
+        case .squawk: return "sparkles"
         case .models: return "waveform"
-        case .cleanup: return "sparkles"
+        case .cleanup: return "wand.and.stars"
         case .dictionary: return "character.book.closed"
         case .appearance: return "paintbrush"
         case .accounts: return "key"
@@ -53,7 +59,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
     var group: Group {
         switch self {
-        case .general, .models, .cleanup, .dictionary, .appearance: return .dictation
+        case .general, .keys, .squawk, .models, .cleanup, .dictionary, .appearance:
+            return .dictation
         // Accounts sits with the system settings, not with Dictation: it is
         // setup you finish once, not a dial you turn while tuning how parrot
         // types.
@@ -91,8 +98,8 @@ final class SettingsContext: ObservableObject {
 
     /// Show the recording pill with the given look so the user can judge it
     /// against their own voice, rather than against a static swatch.
-    var startOverlayPreview: ((OverlayStyle, Double) -> Void)?
-    var updateOverlayPreview: ((OverlayStyle, Double) -> Void)?
+    var startOverlayPreview: ((Double) -> Void)?
+    var updateOverlayPreview: ((Double) -> Void)?
     var endOverlayPreview: (() -> Void)?
 
     var isLive: Bool { startOverlayPreview != nil }
@@ -137,6 +144,10 @@ struct SettingsRootView: View {
         switch pane {
         case .general:
             GeneralPane(store: store)
+        case .keys:
+            KeysPane(store: store)
+        case .squawk:
+            SquawkPane(store: store)
         case .models:
             ModelsPane(store: store, catalog: catalog, context: context)
         case .cleanup:

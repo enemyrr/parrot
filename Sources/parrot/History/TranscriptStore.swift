@@ -2,7 +2,8 @@ import Foundation
 
 struct TranscriptEntry: Codable {
     let at: Date
-    /// Straight off the ASR engine, before wordlist and cleanup.
+    /// Straight off the ASR engine, before wordlist and cleanup. For a squawk
+    /// this is the instruction, not the answer.
     let raw: String
     /// What actually got typed.
     let text: String
@@ -10,6 +11,41 @@ struct TranscriptEntry: Codable {
     let seconds: Double
     let latched: Bool
     let cleaned: Bool
+    /// Which key produced this. Absent in entries written before squawk
+    /// existed, which are all dictation.
+    let mode: DictationMode
+
+    init(
+        at: Date,
+        raw: String,
+        text: String,
+        model: String,
+        seconds: Double,
+        latched: Bool,
+        cleaned: Bool,
+        mode: DictationMode = .dictate
+    ) {
+        self.at = at
+        self.raw = raw
+        self.text = text
+        self.model = model
+        self.seconds = seconds
+        self.latched = latched
+        self.cleaned = cleaned
+        self.mode = mode
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Date.self, forKey: .at)
+        raw = try c.decode(String.self, forKey: .raw)
+        text = try c.decode(String.self, forKey: .text)
+        model = try c.decode(String.self, forKey: .model)
+        seconds = try c.decode(Double.self, forKey: .seconds)
+        latched = try c.decode(Bool.self, forKey: .latched)
+        cleaned = try c.decode(Bool.self, forKey: .cleaned)
+        mode = try c.decodeIfPresent(DictationMode.self, forKey: .mode) ?? .dictate
+    }
 }
 
 /// Append-only JSONL log of everything dictated.

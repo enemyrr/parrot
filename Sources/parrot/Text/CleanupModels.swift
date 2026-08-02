@@ -29,7 +29,7 @@ enum CleanupModels {
     }
 
     /// Providers that run locally have nothing to list and return empty.
-    static func fetch(for provider: CleanupProvider) async throws -> [Model] {
+    static func fetch(for provider: LLMProvider) async throws -> [Model] {
         guard let account = provider.keychainAccount else { return [] }
         guard let key = Keychain.apiKey(for: account) else {
             throw ListError.missingAPIKey(account)

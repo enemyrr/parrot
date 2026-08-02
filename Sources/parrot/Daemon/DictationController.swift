@@ -32,9 +32,16 @@ final class DictationController {
     private var stats: StatsStore?
     private var wordlist: Wordlist
     private var cleaner: TextCleaner?
+    /// Built per squawk rather than held: the provider, model and key can all
+    /// change between one recording and the next.
+    private var squawkContext: Task<ScreenContext?, Never>?
 
     private var isLatched = false
     private var isRecording = false
+    /// Which key started the recording in flight. Read again at the end of it,
+    /// so a settings change mid-utterance can't reroute audio that was captured
+    /// under the other mode.
+    private var mode: DictationMode = .dictate
     /// Lives on the context so the Appearance pane reads the real state rather
     /// than its own guess at it.
     private var isPreviewing: Bool {
@@ -95,11 +102,11 @@ final class DictationController {
             self.context.engineStatus = .failed(reason)
             self.menuBar?.setEngine(.failed)
         }
-        context.startOverlayPreview = { [weak self] style, sensitivity in
-            self?.startOverlayPreview(style: style, sensitivity: sensitivity)
+        context.startOverlayPreview = { [weak self] sensitivity in
+            self?.startOverlayPreview(sensitivity: sensitivity)
         }
-        context.updateOverlayPreview = { [weak self] style, sensitivity in
-            self?.updateOverlayPreview(style: style, sensitivity: sensitivity)
+        context.updateOverlayPreview = { [weak self] sensitivity in
+            self?.updateOverlayPreview(sensitivity: sensitivity)
         }
         context.endOverlayPreview = { [weak self] in
             self?.endOverlayPreview()
@@ -138,7 +145,7 @@ final class DictationController {
         if new.model != old.model || new.languages != old.languages {
             loadEngine()
         }
-        if new.hotkey != old.hotkey || new.latch != old.latch {
+        if new.hotkey != old.hotkey || new.latch != old.latch || new.squawk != old.squawk {
             restartMonitor()
         }
         if new.cleanup != old.cleanup {
@@ -260,13 +267,9 @@ final class DictationController {
             return
         }
         if let overlay {
-            overlay.setStyle(settings.overlay.style)
             overlay.setSensitivity(settings.overlay.sensitivity)
         } else {
-            overlay = RecordingOverlay(
-                style: settings.overlay.style,
-                sensitivity: settings.overlay.sensitivity
-            )
+            overlay = RecordingOverlay(sensitivity: settings.overlay.sensitivity)
         }
     }
 
@@ -322,7 +325,23 @@ final class DictationController {
             menuBar?.setEngine(.failed)
             return
         }
-        let monitor = HotkeyMonitor(hotkey: hotkey, config: settings.latch, debug: debugHotkey)
+
+        var bindings: [(DictationMode, Hotkey)] = [(.dictate, hotkey)]
+        if settings.squawk.enabled {
+            // A squawk key that collides with the dictation key is dropped
+            // rather than fatal: dictation is the thing you can't lose, and the
+            // settings pane says the same thing where someone can fix it.
+            if settings.squawk.isUsable(alongside: hotkey) {
+                bindings.append((.squawk, settings.squawk.hotkey))
+            } else {
+                FileHandle.standardError.write(Data(
+                    ("squawk hotkey \(settings.squawk.hotkey.displayLabel) can't be used "
+                        + "alongside \(hotkey.displayLabel) — pick another in settings\n").utf8
+                ))
+            }
+        }
+
+        let monitor = HotkeyMonitor(hotkeys: bindings, config: settings.latch, debug: debugHotkey)
         do {
             try monitor.start { [weak self] event in
                 MainActor.assumeIsolated { self?.handle(event) }
@@ -332,8 +351,11 @@ final class DictationController {
             accessibilityPoll?.invalidate()
             accessibilityPoll = nil
             let latchHint = settings.latch.enabled ? " · double-tap for hands-free" : ""
+            let listening = bindings
+                .map { "\($0.1.displayName) to \($0.0 == .dictate ? "dictate" : "squawk")" }
+                .joined(separator: " · ")
             FileHandle.standardError.write(Data(
-                "listening on \(hotkey.displayName) hold\(latchHint)\n".utf8
+                "listening on \(listening)\(latchHint)\n".utf8
             ))
         } catch HotkeyMonitor.HotkeyError.accessibilityDenied {
             FileHandle.standardError.write(Data(
@@ -372,8 +394,8 @@ final class DictationController {
 
     private func handle(_ event: HotkeyMonitor.Event) {
         switch event {
-        case .begin:
-            beginRecording()
+        case .begin(let mode):
+            beginRecording(mode)
         case .latched:
             // Only meaningful over a recording that actually started. A capture
             // that failed to open leaves the monitor's state machine running,
@@ -381,12 +403,14 @@ final class DictationController {
             guard isRecording else { return }
             isLatched = true
             FileHandle.standardError.write(Data("🔒 hands-free · tap to stop\n".utf8))
-            overlay?.show(.latched)
+            overlay?.show(.latched, mode: mode)
             menuBar?.setState(.latched)
         case .cancelled:
             _ = capture.stop()
             isRecording = false
             isLatched = false
+            squawkContext?.cancel()
+            squawkContext = nil
             FileHandle.standardError.write(Data("✗ cancelled\n".utf8))
             overlay?.hide()
             menuBar?.setState(.idle)
@@ -395,7 +419,7 @@ final class DictationController {
         }
     }
 
-    private func beginRecording() {
+    private func beginRecording(_ mode: DictationMode) {
         // A preview owns the same microphone and the same pill. Dictation wins.
         endOverlayPreview()
         do {
@@ -404,10 +428,21 @@ final class DictationController {
             FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
             return
         }
+        self.mode = mode
         isRecording = true
         isLatched = false
-        FileHandle.standardError.write(Data("● recording\n".utf8))
-        overlay?.show(.recording)
+        // Read the screen now, while the user is still talking, rather than
+        // after they stop: the walk costs a few hundred milliseconds, and this
+        // is the only place in the whole flow where they are free. It also
+        // snapshots the screen as it was when they reached for the key, which
+        // is the thing they were looking at when they decided what to say.
+        if mode == .squawk {
+            startContextCapture()
+        }
+        FileHandle.standardError.write(Data(
+            (mode == .squawk ? "🦜 squawking\n" : "● recording\n").utf8
+        ))
+        overlay?.show(.recording, mode: mode)
         menuBar?.setState(.recording)
     }
 
@@ -418,7 +453,7 @@ final class DictationController {
         let wasLatched = isLatched
         isLatched = false
 
-        overlay?.show(.transcribing)
+        overlay?.show(.transcribing, mode: mode)
         menuBar?.setState(.transcribing)
 
         let seconds = Double(samples.count) / AudioCapture.targetSampleRate
@@ -437,8 +472,15 @@ final class DictationController {
         }
 
         guard !samples.isEmpty, let transcriber else {
+            squawkContext?.cancel()
+            squawkContext = nil
             overlay?.hide()
             menuBar?.setState(.idle)
+            return
+        }
+
+        if mode == .squawk {
+            endSquawk(samples: samples, seconds: seconds, latched: wasLatched, transcriber: transcriber)
             return
         }
 
@@ -486,16 +528,109 @@ final class DictationController {
         }
     }
 
+    // MARK: - Squawk
+
+    /// Kicks the accessibility walk off on a background thread. Every AX call
+    /// is IPC into another app's runloop, so this must never be on main —
+    /// one wedged app would otherwise freeze the pill, the hotkey and the
+    /// menu bar along with it.
+    private func startContextCapture() {
+        squawkContext?.cancel()
+        guard let target = AppTarget.frontmost() else {
+            squawkContext = nil
+            return
+        }
+        let limits = settings.squawk.context.limits
+        let readWindow = settings.squawk.context.readWindow
+        let excluded = settings.squawk.isExcluded(bundleID: target.bundleID)
+
+        squawkContext = Task.detached(priority: .userInitiated) {
+            guard !excluded else {
+                return ScreenContext.skipped(
+                    .excludedApp, app: target.name, bundleID: target.bundleID
+                )
+            }
+            var limits = limits
+            // "Selection and focused field only" is the same walk with no
+            // budget for the window text.
+            if !readWindow { limits.maxCharacters = 0 }
+            return ScreenReader.capture(target, limits: limits)
+        }
+    }
+
+    private func endSquawk(
+        samples: [Float],
+        seconds: Double,
+        latched: Bool,
+        transcriber: Transcriber
+    ) {
+        let squawk = settings.squawk
+        let client: LLMClient
+        switch makeLLMClient(
+            provider: squawk.provider,
+            model: squawk.model,
+            reasoningEffort: squawk.reasoningEffort.rawValue
+        ) {
+        case .success(let made):
+            client = made
+        case .failure(let error):
+            FileHandle.standardError.write(Data("squawk unavailable — \(error)\n".utf8))
+            squawkContext?.cancel()
+            squawkContext = nil
+            overlay?.hide()
+            menuBar?.setState(.idle)
+            return
+        }
+
+        let pipeline = SquawkPipeline(
+            transcriber: transcriber,
+            wordlist: wordlist,
+            client: client,
+            settings: squawk,
+            store: history,
+            stats: stats,
+            transcription: TranscriptionContext(
+                vocabulary: wordlist.vocabulary,
+                languages: settings.languages
+            ),
+            languages: LanguageSelection.displayNames(settings.languages),
+            modelID: transcriber.modelID
+        )
+
+        let contextTask = squawkContext
+        squawkContext = nil
+
+        Task { [weak self] in
+            let context = await contextTask?.value ?? nil
+            let output = await pipeline.process(
+                samples: samples,
+                seconds: seconds,
+                latched: latched,
+                context: context
+            )
+            await MainActor.run { [weak self] in
+                if let output {
+                    // Typing over a selection replaces it, and so does pasting
+                    // over one — so `.replace` needs nothing extra here beyond
+                    // not having disturbed the selection in the meantime.
+                    TextInjector.put(output.text)
+                }
+                guard let self, !self.isRecording, !self.isPreviewing else { return }
+                self.overlay?.hide()
+                self.menuBar?.setState(.idle)
+            }
+        }
+    }
+
     // MARK: - Overlay preview
 
-    private func startOverlayPreview(style: OverlayStyle, sensitivity: Double) {
+    private func startOverlayPreview(sensitivity: Double) {
         guard !isRecording else { return }
         // The preview has to work even with the pill switched off — that is one
         // of the things someone in the Appearance pane may be deciding.
         if overlay == nil {
-            overlay = RecordingOverlay(style: style, sensitivity: sensitivity)
+            overlay = RecordingOverlay(sensitivity: sensitivity)
         }
-        overlay?.setStyle(style)
         overlay?.setSensitivity(sensitivity)
         do {
             try capture.start()
@@ -504,12 +639,13 @@ final class DictationController {
             return
         }
         isPreviewing = true
-        overlay?.show(.recording)
+        // Sensitivity is a dictation-side concern and the meter behaves the
+        // same either way, so the preview always wears the dictation pill.
+        overlay?.show(.recording, mode: .dictate)
     }
 
-    private func updateOverlayPreview(style: OverlayStyle, sensitivity: Double) {
+    private func updateOverlayPreview(sensitivity: Double) {
         guard isPreviewing else { return }
-        overlay?.setStyle(style)
         overlay?.setSensitivity(sensitivity)
     }
 

@@ -99,7 +99,7 @@ final class HotkeyMonitorTests: XCTestCase {
         let (m, events) = monitor()
         m.handle(type: .flagsChanged, flags: fn, keycode: 0)
         XCTAssertEqual(events.recorded.count, 1)
-        XCTAssertEqual(events.recorded[0], .begin)
+        XCTAssertEqual(events.recorded[0], .begin(.dictate))
 
         // A hold longer than tapMs ends immediately on release.
         Thread.sleep(forTimeInterval: 0.35)
@@ -114,7 +114,7 @@ final class HotkeyMonitorTests: XCTestCase {
         m.handle(type: .flagsChanged, flags: [], keycode: 0)   // quick release
         m.handle(type: .flagsChanged, flags: fn, keycode: 0)   // press 2
 
-        XCTAssertEqual(events.recorded[0], .begin)
+        XCTAssertEqual(events.recorded[0], .begin(.dictate))
         XCTAssertEqual(events.recorded[1], .latched)
 
         // A third press stops and transcribes.
@@ -127,7 +127,7 @@ final class HotkeyMonitorTests: XCTestCase {
         let (m, events) = monitor(windowMs: 60)
         m.handle(type: .flagsChanged, flags: fn, keycode: 0)
         m.handle(type: .flagsChanged, flags: [], keycode: 0)
-        XCTAssertEqual(events.recorded[0], .begin)
+        XCTAssertEqual(events.recorded[0], .begin(.dictate))
         XCTAssertEqual(events.recorded.count, 1, "should wait out the double-tap window")
 
         let ended = expectation(description: "end after window")
@@ -164,11 +164,11 @@ final class HotkeyMonitorTests: XCTestCase {
     func testKeyShortcutProducesBeginThenEnd() {
         let (m, events) = monitor(hotkey: combo)
         m.handle(type: .keyDown, flags: comboFlags, keycode: space)
-        XCTAssertEqual(events.recorded, [.begin])
+        XCTAssertEqual(events.recorded, [.begin(.dictate)])
 
         Thread.sleep(forTimeInterval: 0.35)
         m.handle(type: .keyUp, flags: comboFlags, keycode: space)
-        XCTAssertEqual(events.recorded, [.begin, .end])
+        XCTAssertEqual(events.recorded, [.begin(.dictate), .end])
     }
 
     func testKeyShortcutIgnoresTheKeyWithoutItsModifiers() {
@@ -180,7 +180,7 @@ final class HotkeyMonitorTests: XCTestCase {
 
         // Extra modifiers on top are fine — ⌃⌥⇧Space still contains ⌃⌥Space.
         m.handle(type: .keyDown, flags: [.maskControl, .maskAlternate, .maskShift], keycode: space)
-        XCTAssertEqual(events.recorded, [.begin])
+        XCTAssertEqual(events.recorded, [.begin(.dictate)])
     }
 
     /// Auto-repeat fires keyDown a dozen times a second for as long as the key
@@ -190,7 +190,7 @@ final class HotkeyMonitorTests: XCTestCase {
         XCTAssertTrue(m.wants(type: .keyDown, flags: comboFlags, keycode: space))
         m.handle(type: .keyDown, flags: comboFlags, keycode: space)
         XCTAssertFalse(m.wants(type: .keyDown, flags: comboFlags, keycode: space))
-        XCTAssertEqual(events.recorded, [.begin])
+        XCTAssertEqual(events.recorded, [.begin(.dictate)])
     }
 
     /// Letting go of ⌃ before Space is a normal way to release ⌃Space, and it
@@ -200,7 +200,7 @@ final class HotkeyMonitorTests: XCTestCase {
         m.handle(type: .keyDown, flags: comboFlags, keycode: space)
         Thread.sleep(forTimeInterval: 0.35)
         m.handle(type: .keyUp, flags: [], keycode: space)
-        XCTAssertEqual(events.recorded, [.begin, .end])
+        XCTAssertEqual(events.recorded, [.begin(.dictate), .end])
     }
 
     func testKeyShortcutStillLatchesOnADoubleTap() {
@@ -208,7 +208,7 @@ final class HotkeyMonitorTests: XCTestCase {
         m.handle(type: .keyDown, flags: comboFlags, keycode: space)
         m.handle(type: .keyUp, flags: comboFlags, keycode: space)
         m.handle(type: .keyDown, flags: comboFlags, keycode: space)
-        XCTAssertEqual(events.recorded, [.begin, .latched])
+        XCTAssertEqual(events.recorded, [.begin(.dictate), .latched])
     }
 
     /// Escape normally cancels. When it *is* the hotkey, pressing it has to
@@ -217,10 +217,120 @@ final class HotkeyMonitorTests: XCTestCase {
         let escapeHotkey = Hotkey(keyCode: 53, modifiers: [.control], keyLabel: "Esc")
         let (m, events) = monitor(hotkey: escapeHotkey)
         m.handle(type: .keyDown, flags: .maskControl, keycode: escape)
-        XCTAssertEqual(events.recorded, [.begin])
+        XCTAssertEqual(events.recorded, [.begin(.dictate)])
+    }
+
+    // MARK: - Two modes on one tap
+
+    private let control = CGEventFlags.maskControl
+
+    /// Fn dictates, ⌃ squawks, one tap serves both.
+    private func twoModeMonitor() -> (HotkeyMonitor, Events) {
+        let m = HotkeyMonitor(
+            hotkeys: [(.dictate, .fn), (.squawk, .control)],
+            config: .default
+        )
+        let events = Events()
+        m.onEvent = { events.append($0) }
+        return (m, events)
+    }
+
+    func testEachHotkeyStartsItsOwnMode() {
+        let (m, events) = twoModeMonitor()
+        m.handle(type: .flagsChanged, flags: control, keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.squawk)])
+
+        Thread.sleep(forTimeInterval: 0.35)
+        m.handle(type: .flagsChanged, flags: [], keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.squawk), .end])
+
+        m.handle(type: .flagsChanged, flags: fn, keycode: 0)
+        XCTAssertEqual(events.recorded.last, .begin(.dictate))
+    }
+
+    /// One event can move two bindings at once. Pressing ⌃ while Fn is held
+    /// must not be read as Fn coming up — that would end the recording on the
+    /// press of an unrelated key.
+    func testSecondModifierDuringASessionIsIgnored() {
+        let (m, events) = twoModeMonitor()
+        m.handle(type: .flagsChanged, flags: fn, keycode: 0)
+        m.handle(type: .flagsChanged, flags: [fn, control], keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.dictate)], "⌃ must not touch an Fn session")
+
+        // ...and releasing it doesn't end the Fn session either.
+        m.handle(type: .flagsChanged, flags: fn, keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.dictate)])
+
+        Thread.sleep(forTimeInterval: 0.35)
+        m.handle(type: .flagsChanged, flags: [], keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.dictate), .end])
+    }
+
+    /// The mode that started a recording is the only one that can latch it.
+    func testTheOtherModeCannotLatchASession() {
+        let (m, events) = twoModeMonitor()
+        m.handle(type: .flagsChanged, flags: fn, keycode: 0)      // press
+        m.handle(type: .flagsChanged, flags: [], keycode: 0)      // quick release
+        m.handle(type: .flagsChanged, flags: control, keycode: 0) // wrong key
+        XCTAssertEqual(events.recorded, [.begin(.dictate)])
+    }
+
+    func testEventMaskUnionsEveryBinding() {
+        // A bare modifier alone never needs keyUp; adding a key shortcut does.
+        let bare = HotkeyMonitor.eventMask(for: [Hotkey.fn, Hotkey.control])
+        XCTAssertEqual(bare & keyUpMask, 0)
+        XCTAssertNotEqual(HotkeyMonitor.eventMask(for: [Hotkey.fn, combo]) & keyUpMask, 0)
+    }
+
+    // MARK: - Chord abort
+
+    /// ⌃ is half of every shortcut on the Mac. A keystroke on top of the held
+    /// modifier is the user reaching for ⌃C, not talking.
+    func testKeystrokeOverAHeldBareModifierCancels() {
+        let (m, events) = twoModeMonitor()
+        m.handle(type: .flagsChanged, flags: control, keycode: 0)
+        XCTAssertTrue(m.wants(type: .keyDown, flags: control, keycode: letterA))
+        m.handle(type: .keyDown, flags: control, keycode: letterA)
+        XCTAssertEqual(events.recorded, [.begin(.squawk), .cancelled])
+
+        // The release of a cancelled session is a no-op, not a second end.
+        m.handle(type: .flagsChanged, flags: [], keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.squawk), .cancelled])
+    }
+
+    /// Hands-free is exactly the state where the user is meant to keep using
+    /// the keyboard, and the modifier isn't held any more.
+    func testTypingWhileLatchedDoesNotCancel() {
+        let (m, events) = monitor()
+        m.handle(type: .flagsChanged, flags: fn, keycode: 0)
+        m.handle(type: .flagsChanged, flags: [], keycode: 0)
+        m.handle(type: .flagsChanged, flags: fn, keycode: 0)
+        XCTAssertEqual(events.recorded, [.begin(.dictate), .latched])
+
+        XCTAssertFalse(m.wants(type: .keyDown, flags: [], keycode: letterA))
+        m.handle(type: .keyDown, flags: [], keycode: letterA)
+        XCTAssertEqual(events.recorded, [.begin(.dictate), .latched])
+    }
+
+    /// The filter is the hot path: when nothing is being recorded, an ordinary
+    /// keystroke must still cost one comparison and no dispatch.
+    func testKeystrokesAreNotForwardedWhenIdle() {
+        let (m, _) = twoModeMonitor()
+        XCTAssertFalse(m.wants(type: .keyDown, flags: [], keycode: letterA))
     }
 
     // MARK: - Validity
+
+    func testSquawkHotkeyMustDifferFromDictation() {
+        var squawk = SquawkSettings.default
+        squawk.hotkey = .fn
+        XCTAssertFalse(squawk.isUsable(alongside: .fn))
+        XCTAssertTrue(squawk.isUsable(alongside: .option))
+
+        // Two bare modifiers at once is still not a hotkey either way.
+        squawk.hotkey = Hotkey(modifiers: [.control, .option])
+        XCTAssertFalse(squawk.isUsable(alongside: .fn))
+    }
 
     func testUsabilityRules() {
         XCTAssertTrue(Hotkey.fn.isUsable)
