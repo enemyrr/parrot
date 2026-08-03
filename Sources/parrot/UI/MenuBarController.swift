@@ -31,15 +31,23 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
     private let recentMenu = NSMenu()
     private let recentItem: NSMenuItem
+    private let microphoneMenu = NSMenu()
+    private let microphoneItem: NSMenuItem
     private let statusLine: NSMenuItem
 
     private let openSettings: (SettingsPane) -> Void
+    private let settings: SettingsStore
     private var store: TranscriptStore?
     private var engine: Engine = .loading
     private var state: State = .idle
 
-    init(openSettings: @escaping (SettingsPane) -> Void, store: TranscriptStore?) {
+    init(
+        openSettings: @escaping (SettingsPane) -> Void,
+        settings: SettingsStore,
+        store: TranscriptStore?
+    ) {
         self.openSettings = openSettings
+        self.settings = settings
         self.store = store
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -52,6 +60,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 
         recentItem = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
+        microphoneItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
 
         super.init()
 
@@ -68,6 +77,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // Same deal as Recent: built on open, because devices come and go while
+        // the app is running and a menu built at launch would offer headphones
+        // that were unplugged an hour ago. Sits with Settings rather than with
+        // Recent — it's a setting you change, not a thing you read back.
+        microphoneMenu.delegate = self
+        microphoneMenu.autoenablesItems = false
+        microphoneItem.submenu = microphoneMenu
+        menu.addItem(microphoneItem)
+
         let settings = NSMenuItem(
             title: "Settings…",
             action: #selector(openSettingsClicked),
@@ -75,20 +93,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         )
         settings.target = self
         menu.addItem(settings)
-
-        // Settings apply live now, so this is no longer the price of changing
-        // one — it's here for picking up a rebuilt binary. Only offered when
-        // launchd can actually bring us back; from a terminal it would just
-        // quit, which isn't a restart.
-        if isManagedByLaunchd {
-            let restart = NSMenuItem(
-                title: "Restart parrot",
-                action: #selector(restartClicked),
-                keyEquivalent: ""
-            )
-            restart.target = self
-            menu.addItem(restart)
-        }
 
         menu.addItem(.separator())
 
@@ -101,9 +105,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         setHistoryStore(store)
         setEngine(.loading)
     }
-
-    /// A LaunchAgent-started process is reparented to launchd (pid 1).
-    private var isManagedByLaunchd: Bool { getppid() == 1 }
 
     // MARK: - Updates
 
@@ -168,6 +169,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     // MARK: - NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === microphoneMenu {
+            rebuildMicrophoneMenu(menu)
+            return
+        }
         guard menu === recentMenu, let store else { return }
         menu.removeAllItems()
 
@@ -202,6 +207,55 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         )
         all.target = self
         menu.addItem(all)
+    }
+
+    /// The device list, with a tick on the one recordings come from.
+    ///
+    /// "System Default" is first and names the device it currently resolves to,
+    /// because "System Default" on its own doesn't answer the question anyone
+    /// opens this menu with — which microphone am I on?
+    private func rebuildMicrophoneMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let selected = settings.settings.audio.inputDeviceUID
+        let devices = AudioDevices.inputs()
+
+        let systemDefault = AudioDevices.systemDefaultInput()
+        let followTitle = systemDefault.map { "System Default (\($0.name))" } ?? "System Default"
+        menu.addItem(microphoneChoice(title: followTitle, uid: "", selected: selected))
+
+        if !devices.isEmpty {
+            menu.addItem(.separator())
+            for device in devices {
+                menu.addItem(microphoneChoice(title: device.name, uid: device.uid, selected: selected))
+            }
+        }
+
+        // A chosen device that isn't plugged in gets said out loud. Capture
+        // falls back to the system default, and without this row the menu would
+        // show no tick at all and look like the setting had lost itself.
+        if !selected.isEmpty, !devices.contains(where: { $0.uid == selected }) {
+            menu.addItem(.separator())
+            let missing = NSMenuItem(
+                title: "Chosen microphone unavailable — using the default",
+                action: nil,
+                keyEquivalent: ""
+            )
+            missing.isEnabled = false
+            menu.addItem(missing)
+        }
+    }
+
+    private func microphoneChoice(title: String, uid: String, selected: String) -> NSMenuItem {
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(microphoneClicked(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = uid
+        item.state = uid == selected ? .on : .off
+        return item
     }
 
     private static func title(for entry: TranscriptEntry) -> String {
@@ -251,17 +305,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    @objc private func openSettingsClicked() { openSettings(.general) }
+    /// Writes straight through the store, so it persists and the daemon picks
+    /// it up the same way it picks up a change made in the settings window.
+    /// Takes effect on the next recording — swapping the device out from under
+    /// one in flight would end it with half a sentence.
+    @objc private func microphoneClicked(_ sender: NSMenuItem) {
+        guard let uid = sender.representedObject as? String else { return }
+        settings.settings.audio.inputDeviceUID = uid
+    }
+
+    @objc private func openSettingsClicked() { openSettings(.home) }
     @objc private func openModelsClicked() { openSettings(.models) }
     @objc private func openPermissionsClicked() { openSettings(.permissions) }
     @objc private func openHistoryPaneClicked() { openSettings(.history) }
-
-    /// `kickstart -k` rather than terminating: launchd's KeepAlive ignores a
-    /// clean exit, so quitting would stop parrot rather than restart it.
-    @objc private func restartClicked() {
-        LaunchAgent.kickstart()
-        // launchctl kills this process as part of the restart; nothing to wait for.
-    }
 
     @objc private func quitClicked() {
         NSApp.terminate(nil)

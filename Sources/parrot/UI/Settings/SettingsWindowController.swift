@@ -16,13 +16,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     let context = SettingsContext()
 
     private var window: NSWindow?
-    private var pane: SettingsPane = .general
+    private var pane: SettingsPane = .home
 
     private override init() {
         super.init()
     }
 
-    func show(pane: SettingsPane = .general) {
+    func show(pane: SettingsPane = .home) {
         self.pane = pane
         let window = window ?? makeWindow()
         // Rebuilding the root view is what makes `show(pane:)` able to select a

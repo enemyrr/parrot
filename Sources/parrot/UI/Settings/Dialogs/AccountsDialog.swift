@@ -8,17 +8,24 @@ import SwiftUI
 /// features belongs to neither of them, and the alternative — the same editor
 /// rendered in both panes — makes one key look like two.
 ///
-/// The panes that consume a key keep a one-line status of their own, so you can
-/// still see whether the thing you are configuring will work from where you are
-/// configuring it. What they don't keep is the editor.
-struct AccountsPane: View {
+/// A dialog off About rather than a sidebar row, for the same reason
+/// Permissions is one: pasting a key is something you do once, so a permanent
+/// row spent the sidebar's attention on a page nobody opens twice. The places
+/// that consume a key keep a one-line status of their own, and that status is
+/// what opens this — so the way in is always where you noticed the key was
+/// missing.
+struct AccountsDialog: View {
     @ObservedObject var store: SettingsStore
+    let dismiss: () -> Void
+
     @StateObject private var keys = APIKeyState()
 
     var body: some View {
-        SettingsPage(
+        SettingsDialog(
             title: "Accounts",
-            subtitle: "Keys for the providers parrot can talk to. Nothing here is required."
+            subtitle: "Keys for the providers parrot can talk to. Nothing here is required.",
+            width: 560,
+            dismiss: dismiss
         ) {
             ForEach(Keychain.Account.allCases, id: \.rawValue) { account in
                 SettingsCard(
@@ -50,6 +57,17 @@ struct AccountsPane: View {
             uses.append("Cleanup")
         }
         return uses
+    }
+
+    /// The line the About row shows, so the dialog is only worth opening when
+    /// it doesn't already say what you wanted to know.
+    static var summary: String {
+        let stored = Keychain.Account.allCases.filter { APIKeyState.source(for: $0).hasKey }
+        guard !stored.isEmpty else {
+            return "No keys stored. Only the cloud models need one."
+        }
+        return "\(stored.map(\.displayName).formatted(.list(type: .and))) "
+            + (stored.count == 1 ? "is set up." : "are set up.")
     }
 }
 
@@ -90,7 +108,10 @@ final class APIKeyState: ObservableObject {
     }
 
     @Published private(set) var sources: [String: Source] = [:]
-    @Published var error: String?
+    /// Per account, not one shared string: every provider has its own editor on
+    /// screen, and a Keychain failure shown under all of them names the wrong
+    /// one three times.
+    @Published private(set) var errors: [String: String] = [:]
 
     init() {
         refresh()
@@ -106,27 +127,31 @@ final class APIKeyState: ObservableObject {
         sources[account.rawValue] ?? .none
     }
 
+    func error(for account: Keychain.Account) -> String? {
+        errors[account.rawValue]
+    }
+
     func save(_ key: String, for account: Keychain.Account) {
-        error = nil
+        errors[account.rawValue] = nil
         do {
             try Keychain.write(key, for: account)
         } catch {
-            self.error = "\(error)"
+            errors[account.rawValue] = "\(error)"
         }
         refresh()
     }
 
     func remove(_ account: Keychain.Account) {
-        error = nil
+        errors[account.rawValue] = nil
         do {
             try Keychain.delete(account)
         } catch {
-            self.error = "\(error)"
+            errors[account.rawValue] = "\(error)"
         }
         refresh()
     }
 
-    private static func source(for account: Keychain.Account) -> Source {
+    static func source(for account: Keychain.Account) -> Source {
         if Keychain.read(account)?.isEmpty == false { return .keychain }
         if ProcessInfo.processInfo.environment[account.envVar]?.isEmpty == false {
             return .environment(account.envVar)
@@ -162,7 +187,7 @@ private struct APIKeyEditor: View {
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            if let error = state.error {
+            if let error = state.error(for: account) {
                 Text(error)
                     .font(.system(size: 11))
                     .foregroundStyle(.red)
@@ -195,11 +220,17 @@ private struct APIKeyEditor: View {
 /// The compact form the consuming panes show: whether the key that this feature
 /// needs is there, and a way to go add it. Deliberately not an editor — one
 /// place to type a key, several places to be told you haven't.
+///
+/// It opens the editor as a sheet on itself rather than sending you to another
+/// page: you noticed the key was missing here, so here is where you should be
+/// able to fix it and carry on with whatever you were setting up.
 struct APIKeyStatusRow: View {
     let account: Keychain.Account
     /// What breaks without it, in the voice of the pane it appears in.
     let consequence: String
     @ObservedObject var state: APIKeyState
+
+    @State private var editing = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -215,12 +246,15 @@ struct APIKeyStatusRow: View {
                 }
             }
             Spacer(minLength: 8)
-            Button(hasKey ? "Manage" : "Add a key") {
-                SettingsWindowController.shared.show(pane: .accounts)
-            }
-            .controlSize(.small)
+            Button(hasKey ? "Manage" : "Add a key") { editing = true }
+                .controlSize(.small)
         }
         .onAppear { state.refresh() }
+        .sheet(isPresented: $editing) {
+            state.refresh()
+        } content: {
+            AccountsDialog(store: SettingsStore.shared) { editing = false }
+        }
     }
 
     private var hasKey: Bool { state.source(for: account).hasKey }

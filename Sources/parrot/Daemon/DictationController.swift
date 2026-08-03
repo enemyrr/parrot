@@ -26,15 +26,31 @@ final class DictationController {
     private var transcriber: Transcriber?
     private var monitor: HotkeyMonitor?
     private let capture = AudioCapture()
+    private let systemMute = SystemAudioMute()
     private var overlay: RecordingOverlay?
     private var menuBar: MenuBarController?
     private var history: TranscriptStore?
     private var stats: StatsStore?
     private var wordlist: Wordlist
+    private var shortcuts: ShortcutExpander
     private var cleaner: TextCleaner?
     /// Built per squawk rather than held: the provider, model and key can all
     /// change between one recording and the next.
     private var squawkContext: Task<ScreenContext?, Never>?
+    /// The names in the window the dictation in flight is headed for, read while
+    /// the user is still talking. Nil whenever integrations are off, no
+    /// integration claims the app, or this one has given up on it.
+    private var rosterTask: Task<AppRoster, Never>?
+    /// Whose window `rosterTask` is reading. The monitor keys its give-up count
+    /// on it, so an app that restarts into a version that works gets another go.
+    private var rosterPID: pid_t?
+    /// Which integrations are currently working. Shared with the settings
+    /// window, which is the only place a user can see any of this.
+    private let integrations = IntegrationMonitor.shared
+    /// Which app the recording in flight is headed for, read when the key went
+    /// down. Dictation's half of app matching, and the id is all of it — the
+    /// window's *contents* are never read on this path, integrations or not.
+    private var frontBundleID: String?
 
     private var isLatched = false
     private var isRecording = false
@@ -74,6 +90,14 @@ final class DictationController {
         self.context = context
         self.settings = store.settings
         self.wordlist = Wordlist(settings: store.settings.wordlist)
+        self.shortcuts = ShortcutExpander(shortcuts: store.settings.shortcuts)
+    }
+
+    /// The dictionary's terms plus every shortcut trigger, for the transcriber
+    /// and the cleaner. Both halves have to be heard right and left alone: a
+    /// trigger the cleaner rewrote is a shortcut that silently stops firing.
+    private var spokenVocabulary: [String] {
+        wordlist.vocabulary + shortcuts.triggers
     }
 
     convenience init() {
@@ -87,6 +111,11 @@ final class DictationController {
     // MARK: - Lifecycle
 
     func start() {
+        // First, before any of the below can persist a settings change: an
+        // upgrade has to be told apart from a first run, and a stored blob is
+        // the only evidence of one.
+        SettingsStore.seedOnboardingForExistingInstall()
+
         store.onChange = { [weak self] old, new in
             self?.apply(old: old, new: new)
         }
@@ -112,6 +141,7 @@ final class DictationController {
             self?.endOverlayPreview()
         }
 
+        capture.preferredDeviceUID = settings.audio.inputDeviceUID
         capture.onLevel = { [weak self] level in
             // Hops to the main actor inside pushLevel; the audio thread must
             // not block here.
@@ -123,14 +153,26 @@ final class DictationController {
         rebuildCleaner()
         menuBar = MenuBarController(
             openSettings: { SettingsWindowController.shared.show(pane: $0) },
+            settings: store,
             store: history
         )
+
+        // Before the engine and the monitor, so the two things most likely to
+        // fail on a fresh Mac — no model, no accessibility — find the setup
+        // window already up and say their piece inside it rather than opening a
+        // settings window over the top of it.
+        if !SettingsStore.hasCompletedOnboarding {
+            OnboardingWindowController.shared.show(store: store, catalog: catalog, context: context)
+        }
 
         loadEngine()
         startMonitor()
     }
 
     func stop() {
+        // First: a daemon that exits mid-recording must not leave the Mac
+        // silent behind it, and there is nobody left to put it back afterwards.
+        systemMute.restore()
         monitor?.stop()
         monitor = nil
         accessibilityPoll?.invalidate()
@@ -145,6 +187,14 @@ final class DictationController {
         if new.model != old.model || new.languages != old.languages {
             loadEngine()
         }
+        if new.audio != old.audio {
+            capture.preferredDeviceUID = new.audio.inputDeviceUID
+            // Switching it off while a hands-free recording is running has to
+            // give the audio back now rather than at the end of the sentence.
+            if !new.audio.muteWhileDictating {
+                systemMute.restore()
+            }
+        }
         if new.hotkey != old.hotkey || new.latch != old.latch || new.squawk != old.squawk {
             restartMonitor()
         }
@@ -153,6 +203,16 @@ final class DictationController {
         }
         if new.wordlist != old.wordlist {
             wordlist = Wordlist(settings: new.wordlist)
+        }
+        if new.shortcuts != old.shortcuts {
+            shortcuts = ShortcutExpander(shortcuts: new.shortcuts)
+        }
+        if new.integrations != old.integrations {
+            // Anything the user changed here is a reason to give an integration
+            // parrot had given up on another chance — including switching one
+            // back on, which is exactly what someone does after fixing whatever
+            // made it come back empty.
+            integrations.reset()
         }
         if new.history != old.history || new.stats != old.stats {
             rebuildStores()
@@ -261,7 +321,7 @@ final class DictationController {
     // MARK: - Components
 
     private func rebuildOverlay() {
-        guard settings.overlay.enabled, !overlaySuppressed else {
+        guard !overlaySuppressed else {
             overlay?.hide()
             overlay = nil
             return
@@ -407,10 +467,14 @@ final class DictationController {
             menuBar?.setState(.latched)
         case .cancelled:
             _ = capture.stop()
+            systemMute.restore()
             isRecording = false
             isLatched = false
             squawkContext?.cancel()
             squawkContext = nil
+            rosterTask?.cancel()
+            rosterTask = nil
+            rosterPID = nil
             FileHandle.standardError.write(Data("✗ cancelled\n".utf8))
             overlay?.hide()
             menuBar?.setState(.idle)
@@ -431,13 +495,31 @@ final class DictationController {
         self.mode = mode
         isRecording = true
         isLatched = false
+        // After the capture opened, not before: a start that throws would
+        // otherwise silence the Mac for a recording that never happened.
+        if settings.audio.muteWhileDictating {
+            systemMute.mute()
+        }
         // Read the screen now, while the user is still talking, rather than
         // after they stop: the walk costs a few hundred milliseconds, and this
         // is the only place in the whole flow where they are free. It also
         // snapshots the screen as it was when they reached for the key, which
         // is the thing they were looking at when they decided what to say.
+        frontBundleID = nil
+        rosterTask?.cancel()
+        rosterTask = nil
         if mode == .squawk {
             startContextCapture()
+        } else {
+            // Cheap — the frontmost app, not a walk of its window. Read here
+            // rather than at the end so it is the app they were in when they
+            // reached for the key, not whatever they alt-tabbed to while the
+            // model was thinking.
+            let target = AppTarget.frontmost()
+            frontBundleID = target?.bundleID
+            // The one thing on the dictation path that does walk the window,
+            // and only for the names in it. Off unless asked for.
+            if let target { startRosterCapture(target) }
         }
         FileHandle.standardError.write(Data(
             (mode == .squawk ? "🦜 squawking\n" : "● recording\n").utf8
@@ -449,6 +531,10 @@ final class DictationController {
     private func endRecording() {
         guard isRecording else { return }
         let samples = capture.stop()
+        // With the mic, not with the text: transcription and cleanup can take
+        // seconds, and there is no reason for the Mac to stay silent through
+        // them once nothing is listening.
+        systemMute.restore()
         isRecording = false
         let wasLatched = isLatched
         isLatched = false
@@ -484,31 +570,56 @@ final class DictationController {
             return
         }
 
-        // Built per dictation rather than held as a field: every component it
-        // names can be swapped by a settings change, and a stale pipeline would
-        // quietly keep using the old one.
-        let pipeline = DictationPipeline(
-            transcriber: transcriber,
-            wordlist: wordlist,
-            cleaner: cleaner,
-            cleanup: settings.cleanup,
-            store: history,
-            languages: LanguageSelection.displayNames(settings.languages),
-            // The wordlist's vocabulary, headed upstream this time: the same
-            // terms the cleaner is told to preserve are the ones the API
-            // decoder is told to listen for.
-            transcription: TranscriptionContext(
-                vocabulary: wordlist.vocabulary,
-                languages: settings.languages
-            ),
-            stats: stats,
-            // The transcriber in hand, not the selected id: choosing a model
-            // that isn't downloaded yet keeps the previous one running, and
-            // history and stats have to name the one that did the work.
-            modelID: transcriber.modelID
-        )
+        let rosterTask = self.rosterTask
+        let rosterPID = self.rosterPID
+        let frontBundleID = self.frontBundleID
+        self.rosterTask = nil
+        self.rosterPID = nil
 
+        // `Task {}` in a main-actor method inherits the main actor, so the
+        // pipeline is still built there — after the roster lands, which is the
+        // only reason this moved inside. The walk was kicked off when the key
+        // went down and has had the whole utterance to finish; awaiting it here
+        // costs nothing in the ordinary case and bounds itself by its own
+        // deadline in the bad one.
         Task { [weak self] in
+            let roster = await rosterTask?.value
+            guard let self else { return }
+            if let roster, let id = roster.integrationID, let rosterPID {
+                self.integrations.record(roster, integrationID: id, pid: rosterPID)
+                FileHandle.standardError.write(Data("integration: \(roster.summary)\n".utf8))
+            }
+            let tagger = EntityTagger(roster: roster, settings: self.settings.integrations)
+
+            // Built per dictation rather than held as a field: every component
+            // it names can be swapped by a settings change, and a stale pipeline
+            // would quietly keep using the old one.
+            let pipeline = DictationPipeline(
+                transcriber: transcriber,
+                wordlist: self.wordlist,
+                shortcuts: self.shortcuts,
+                tagger: tagger,
+                cleaner: self.cleaner,
+                cleanup: self.settings.cleanup,
+                style: self.settings.style,
+                bundleID: frontBundleID,
+                store: self.history,
+                languages: LanguageSelection.displayNames(self.settings.languages),
+                // The vocabulary, headed upstream this time: the same terms the
+                // cleaner is told to preserve are the ones the API decoder is
+                // told to listen for — and the names off the screen ride along,
+                // because a tag rule only fires if the decoder heard the name.
+                transcription: TranscriptionContext(
+                    vocabulary: self.spokenVocabulary + tagger.vocabulary,
+                    languages: self.settings.languages
+                ),
+                stats: self.stats,
+                // The transcriber in hand, not the selected id: choosing a model
+                // that isn't downloaded yet keeps the previous one running, and
+                // history and stats have to name the one that did the work.
+                modelID: transcriber.modelID
+            )
+
             let text = await pipeline.process(
                 samples: samples,
                 seconds: seconds,
@@ -525,6 +636,31 @@ final class DictationController {
                 self.overlay?.hide()
                 self.menuBar?.setState(.idle)
             }
+        }
+    }
+
+    // MARK: - Integrations
+
+    /// Kicks off the roster walk, if there is anything to walk for.
+    ///
+    /// Every guard here is a reason not to spend the walk, checked in the order
+    /// that costs least: the switch, then the app table, then this app's own
+    /// switch, then whether the monitor has already given up on it. The last one
+    /// is the failsafe — an integration that keeps coming back empty stops being
+    /// asked, rather than quietly costing a few hundred milliseconds of every
+    /// dictation forever.
+    private func startRosterCapture(_ target: AppTarget) {
+        guard settings.integrations.doesAnything else { return }
+        guard let integration = AppIntegrations.integration(for: target.bundleID) else { return }
+        guard settings.integrations.isEnabled(integration.id) else { return }
+        guard integrations.shouldRead(integration, pid: target.pid) else { return }
+
+        rosterPID = target.pid
+        // Detached for the same reason squawk's walk is: every AX call is IPC
+        // into another app's runloop, and one wedged app must not take the
+        // hotkey and the pill down with it.
+        rosterTask = Task.detached(priority: .userInitiated) {
+            RosterReader.read(target, integration: integration)
         }
     }
 
@@ -585,16 +721,24 @@ final class DictationController {
         let pipeline = SquawkPipeline(
             transcriber: transcriber,
             wordlist: wordlist,
+            shortcuts: shortcuts,
             client: client,
             settings: squawk,
+            style: settings.style,
             store: history,
             stats: stats,
             transcription: TranscriptionContext(
-                vocabulary: wordlist.vocabulary,
+                vocabulary: spokenVocabulary,
                 languages: settings.languages
             ),
             languages: LanguageSelection.displayNames(settings.languages),
-            modelID: transcriber.modelID
+            modelID: transcriber.modelID,
+            onThinking: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isRecording, !self.isPreviewing else { return }
+                    self.overlay?.show(.thinking, mode: .squawk)
+                }
+            }
         )
 
         let contextTask = squawkContext
@@ -666,6 +810,10 @@ final class DictationController {
     /// something is genuinely blocking. Reopening it on every retry would make
     /// a machine that never gets its permission grant unusable.
     private func showSetupWindowOnce(pane: SettingsPane) {
+        // The setup window is already covering both of these, in order and with
+        // a Continue button. A settings window over it would be two setups at
+        // once, disagreeing about which step you are on.
+        guard !OnboardingWindowController.shared.isOpen else { return }
         guard !openedWindowForSetup else { return }
         openedWindowForSetup = true
         SettingsWindowController.shared.show(pane: pane)

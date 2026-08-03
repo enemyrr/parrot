@@ -276,3 +276,32 @@ final class AudioCaptureTests: XCTestCase {
         XCTAssertEqual(data.count, 44 + 6)
     }
 }
+
+/// The HAL enumeration behind the microphone menu. Nothing here needs mic
+/// permission — listing devices isn't recording from them — but a machine with
+/// no input at all is a legitimate state, so the assertions are conditional on
+/// there being something to assert about.
+final class AudioDevicesTests: XCTestCase {
+    func testEveryListedInputHasAUsableIdentity() {
+        for device in AudioDevices.inputs() {
+            XCTAssertFalse(device.uid.isEmpty)
+            XCTAssertFalse(device.name.isEmpty)
+            // The UID is what settings store, so it has to be the lookup key.
+            XCTAssertEqual(AudioDevices.device(uid: device.uid), device)
+        }
+    }
+
+    func testTheSystemDefaultIsOneOfTheListedInputs() throws {
+        let inputs = AudioDevices.inputs()
+        try XCTSkipIf(inputs.isEmpty, "no input devices on this machine")
+        let fallback = try XCTUnwrap(AudioDevices.systemDefaultInput())
+        XCTAssertTrue(inputs.contains(fallback))
+    }
+
+    /// An empty UID is "follow the system", and an unplugged one has to resolve
+    /// the same way rather than to a device that isn't there.
+    func testUnknownAndEmptyUIDsResolveToNothing() {
+        XCTAssertNil(AudioDevices.device(uid: ""))
+        XCTAssertNil(AudioDevices.device(uid: "not-a-device-\(UUID().uuidString)"))
+    }
+}

@@ -145,10 +145,14 @@ final class SquawkPromptTests: XCTestCase {
     func testCustomPromptReplacesTheBaseAndKeepsTheLayers() {
         var settings = SquawkSettings.default
         settings.prompt = "BE TERSE"
-        settings.about = "I'm Andreas."
-        let profile = AppProfile(name: "Mail", bundleIDs: ["com.apple.mail"], instructions: "Sign off.")
+        var style = StyleSettings.default
+        style.about = "I'm Andreas."
+        let category = StyleCategory(
+            name: "Mail", symbol: "envelope", bundleIDs: ["com.apple.mail"],
+            instructions: "Sign off."
+        )
 
-        let system = SquawkPrompt.system(settings: settings, profile: profile)
+        let system = SquawkPrompt.system(settings: settings, style: style, category: category)
         XCTAssertTrue(system.hasPrefix("BE TERSE"))
         XCTAssertFalse(system.contains("You write text that is about to be typed"))
         XCTAssertTrue(system.contains("I'm Andreas."))
@@ -156,7 +160,7 @@ final class SquawkPromptTests: XCTestCase {
     }
 
     func testEmptyPromptFallsBackToTheBuiltIn() {
-        let system = SquawkPrompt.system(settings: .default, profile: nil)
+        let system = SquawkPrompt.system(settings: .default, style: .default, category: StyleSettings.default.fallback)
         XCTAssertTrue(system.contains("You write text that is about to be typed"))
     }
 
@@ -167,7 +171,7 @@ final class SquawkPromptTests: XCTestCase {
     func testLanguageRuleSurvivesACustomBasePrompt() {
         var settings = SquawkSettings.default
         settings.prompt = "BE TERSE"
-        let system = SquawkPrompt.system(settings: settings, profile: nil)
+        let system = SquawkPrompt.system(settings: settings, style: .default, category: StyleSettings.default.fallback)
         XCTAssertTrue(system.hasPrefix("BE TERSE"))
         XCTAssertTrue(system.contains("Language."))
     }
@@ -176,20 +180,23 @@ final class SquawkPromptTests: XCTestCase {
     /// constraint — so they only appear when there are some.
     func testConfiguredLanguagesAppearOnlyWhenSet() {
         let with = SquawkPrompt.system(
-            settings: .default, profile: nil, languages: ["English", "Swedish"]
+            settings: .default, style: .default, category: StyleSettings.default.fallback, languages: ["English", "Swedish"]
         )
         XCTAssertTrue(with.contains("English and Swedish"))
         XCTAssertFalse(
-            SquawkPrompt.system(settings: .default, profile: nil, languages: [])
+            SquawkPrompt.system(settings: .default, style: .default, category: StyleSettings.default.fallback, languages: [])
                 .contains("English and Swedish")
         )
     }
 
     /// Last in the system prompt, where recency helps it stick — and after the
-    /// per-app note, which it defers to.
-    func testLanguageRuleComesAfterTheAppProfile() {
-        let profile = AppProfile(name: "Mail", bundleIDs: ["com.apple.mail"], instructions: "Sign off.")
-        let system = SquawkPrompt.system(settings: .default, profile: profile)
+    /// category's notes, which it defers to.
+    func testLanguageRuleComesAfterTheCategoryNotes() {
+        let category = StyleCategory(
+            name: "Mail", symbol: "envelope", bundleIDs: ["com.apple.mail"],
+            instructions: "Sign off."
+        )
+        let system = SquawkPrompt.system(settings: .default, style: .default, category: category)
         XCTAssertLessThan(
             system.range(of: "Sign off.")!.lowerBound,
             system.range(of: "Language.")!.lowerBound
@@ -228,41 +235,6 @@ final class OpenAIBudgetTests: XCTestCase {
             OpenAIBudget.reasoningHeadroom(effort: "banana"),
             OpenAIBudget.reasoningHeadroom(effort: "")
         )
-    }
-}
-
-final class AppProfileTests: XCTestCase {
-    func testMatchesExactBundleIDCaseInsensitively() {
-        let profile = AppProfile(name: "Mail", bundleIDs: ["com.apple.mail"], instructions: "")
-        XCTAssertTrue(profile.matches("com.apple.Mail"))
-        XCTAssertFalse(profile.matches("com.apple.mailbox"))
-    }
-
-    /// Chromium ships helper processes under suffixed ids, and a profile for
-    /// the browser should cover them.
-    func testWildcardMatchesASuffix() {
-        let profile = AppProfile(name: "Chrome", bundleIDs: ["com.google.Chrome*"], instructions: "")
-        XCTAssertTrue(profile.matches("com.google.Chrome"))
-        XCTAssertTrue(profile.matches("com.google.Chrome.helper"))
-        XCTAssertFalse(profile.matches("com.brave.Browser"))
-    }
-
-    func testFirstEnabledProfileWins() {
-        var settings = SquawkSettings.default
-        settings.profiles = [
-            AppProfile(name: "Off", bundleIDs: ["com.apple.mail"], instructions: "no", enabled: false),
-            AppProfile(name: "On", bundleIDs: ["com.apple.mail"], instructions: "yes"),
-        ]
-        XCTAssertEqual(settings.profile(for: "com.apple.mail")?.name, "On")
-        XCTAssertNil(settings.profile(for: "com.unknown.app"))
-        XCTAssertNil(settings.profile(for: nil))
-    }
-
-    func testShippedProfilesCoverTheObviousApps() {
-        let settings = SquawkSettings.default
-        XCTAssertNotNil(settings.profile(for: "com.apple.mail"))
-        XCTAssertNotNil(settings.profile(for: "com.tinyspeck.slackmacgap"))
-        XCTAssertNotNil(settings.profile(for: "com.apple.MobileSMS"))
     }
 }
 
@@ -316,6 +288,28 @@ final class ScreenReaderFilterTests: XCTestCase {
         )
     }
 
+    /// A renamed or localised window title slips past the name fragment; the
+    /// bundle id it ships under does not.
+    func testPasswordManagersAreExcludedByBundleIDAlone() {
+        let target = AppTarget(pid: 1, name: "Lösenord", bundleID: "com.1password.1password")
+        XCTAssertTrue(ScreenReader.isExcluded(target))
+    }
+
+    /// Every built-in exclusion has to be showable in settings — a name a person
+    /// recognises, and at least one id to resolve an icon from.
+    func testBuiltInExclusionsArePresentable() {
+        for entry in ScreenReader.alwaysExcluded {
+            XCTAssertFalse(entry.name.isEmpty)
+            XCTAssertFalse(entry.bundleIDs.isEmpty, entry.name)
+            XCTAssertTrue(
+                ScreenReader.isExcluded(
+                    AppTarget(pid: 1, name: entry.name, bundleID: entry.bundleIDs[0])
+                ),
+                entry.name
+            )
+        }
+    }
+
     func testSecureTextFieldsAreNeverDescendedInto() {
         XCTAssertTrue(ScreenReader.skippedRoles.contains("AXSecureTextField"))
     }
@@ -326,5 +320,15 @@ final class ScreenReaderFilterTests: XCTestCase {
         XCTAssertTrue(settings.isExcluded(bundleID: "com.example.private"))
         XCTAssertFalse(settings.isExcluded(bundleID: "com.apple.mail"))
         XCTAssertFalse(settings.isExcluded(bundleID: nil))
+    }
+
+    /// The picker takes the same `com.example.App*` a style profile takes, so
+    /// excluding an app has to catch its helper processes the same way.
+    func testExcludedBundleIDsHonourWildcards() {
+        var settings = SquawkSettings.default
+        settings.excludedBundleIDs = ["com.google.Chrome*"]
+        XCTAssertTrue(settings.isExcluded(bundleID: "com.google.Chrome"))
+        XCTAssertTrue(settings.isExcluded(bundleID: "com.google.Chrome.helper"))
+        XCTAssertFalse(settings.isExcluded(bundleID: "com.google.Drive"))
     }
 }

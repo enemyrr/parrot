@@ -2,14 +2,66 @@ import AppKit
 import SwiftUI
 
 struct AboutPane: View {
+    @ObservedObject var store: SettingsStore
+
     @State private var confirmingReset = false
+    @State private var confirmingDelete = false
+    @State private var hasTranscripts = false
+    @State private var flips = 0
+    @State private var dialog: Dialog?
+    /// Empty until `onAppear` fills them, and deliberately so: a `@State`
+    /// default expression runs on every construction of the struct — which is
+    /// every re-render of the settings window — and SwiftUI throws the value
+    /// away. These cost a subprocess, a Keychain read per provider and a file
+    /// stat, so they are done once on appearance instead.
+    @State private var permissionSummary = ""
+    @State private var accountSummary = ""
+
+    /// How the menu bar's "finish setup" item, `parrot settings permissions`
+    /// and `parrot settings accounts` land straight on the thing they name: the
+    /// panes they used to open are sheets on this one now. A binding rather
+    /// than a value because this pane is recreated on every visit — consuming
+    /// it once is what keeps the sheet from reappearing on the way back to
+    /// About.
+    @Binding var openDialog: Dialog?
+
+    init(store: SettingsStore, openDialog: Binding<Dialog?> = .constant(nil)) {
+        self.store = store
+        _openDialog = openDialog
+    }
+
+    /// The setup that used to be its own sidebar row each. Both are finished
+    /// once and then never thought about, which is what a row-plus-sheet is for
+    /// and a permanent page isn't.
+    enum Dialog: String, Identifiable {
+        case permissions, accounts
+        var id: String { rawValue }
+    }
 
     var body: some View {
-        SettingsPage(title: "About") {
+        // No page title: the identity block below *is* the headline, the way
+        // Home's is, and "About" set above a 52pt glyph and a wordmark captions
+        // a room that has already introduced itself.
+        SettingsPage {
             identity
             howToCard
+            setupCard
             filesCard
             resetCard
+        }
+        .onAppear {
+            hasTranscripts = Self.transcriptsExist
+            refreshSummaries()
+            if let requested = openDialog {
+                openDialog = nil
+                dialog = requested
+            }
+        }
+        .sheet(item: $dialog, onDismiss: refreshSummaries) { which in
+            switch which {
+            case .permissions: PermissionsDialog(store: store) { dialog = nil }
+            case .accounts: AccountsDialog(store: store) { dialog = nil }
+            }
         }
         .confirmationDialog(
             "Reset every setting?",
@@ -19,9 +71,18 @@ struct AboutPane: View {
                 SettingsStore.shared.resetToDefaults()
             }
         } message: {
-            Text("Hotkey, models, cleanup, dictionary and appearance all go back to "
+            Text("Hotkey, models, cleanup, style and dictionary all go back to "
                 + "their defaults. Your transcripts, usage totals and API keys are "
                 + "left alone.")
+        }
+        .confirmationDialog(
+            "Delete every transcript?",
+            isPresented: $confirmingDelete
+        ) {
+            Button("Delete", role: .destructive) { deleteTranscripts() }
+        } message: {
+            Text("\(ParrotPaths.historyFile.path) will be emptied. This can't be undone. "
+                + "Your settings and usage totals are left alone.")
         }
     }
 
@@ -30,6 +91,15 @@ struct AboutPane: View {
             if let glyph = ParrotGlyph.image(size: 52) {
                 Image(nsImage: glyph)
                     .foregroundStyle(.primary)
+                    .rotation3DEffect(
+                        .degrees(Double(flips) * 180),
+                        axis: (x: 0, y: 1, z: 0),
+                        perspective: 0.4
+                    )
+                    // Counting flips rather than toggling a bool: hovering out
+                    // carries on in the same direction instead of rewinding.
+                    .onHover { _ in flips += 1 }
+                    .animation(.spring(response: 0.5, dampingFraction: 0.7), value: flips)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("parrot")
@@ -68,6 +138,27 @@ struct AboutPane: View {
         }
     }
 
+    private var setupCard: some View {
+        SettingsCard(header: "Setup") {
+            SettingsDialogRow(
+                label: "Permissions",
+                value: permissionSummary,
+                action: "Review"
+            ) { dialog = .permissions }
+
+            SettingsDialogRow(
+                label: "Accounts",
+                value: accountSummary,
+                action: "Manage"
+            ) { dialog = .accounts }
+        }
+    }
+
+    private func refreshSummaries() {
+        permissionSummary = Self.permissionSummary
+        accountSummary = AccountsDialog.summary
+    }
+
     private var filesCard: some View {
         SettingsCard(
             header: "On disk",
@@ -81,6 +172,8 @@ struct AboutPane: View {
         }
     }
 
+    /// The two halves of "start over": the settings, and the data. Kept apart
+    /// because each one is the thing the other promises not to touch.
     private var resetCard: some View {
         SettingsCard {
             SettingsRow(
@@ -90,7 +183,41 @@ struct AboutPane: View {
             ) {
                 Button("Reset…", role: .destructive) { confirmingReset = true }
             }
+
+            SettingsRow(
+                label: "Delete all transcripts",
+                description: "Permanently delete all local transcripts.",
+                wideControl: true
+            ) {
+                Button("Delete…", role: .destructive) { confirmingDelete = true }
+                    .disabled(!hasTranscripts)
+            }
         }
+    }
+
+    private func deleteTranscripts() {
+        try? TranscriptStore(settings: SettingsStore.shared.settings.history).clear()
+        hasTranscripts = Self.transcriptsExist
+    }
+
+    /// Size rather than existence: clearing writes an empty file back, and a
+    /// live Delete button over nothing is a button that does nothing.
+    private static var transcriptsExist: Bool {
+        let attributes = try? FileManager.default
+            .attributesOfItem(atPath: ParrotPaths.historyFile.path)
+        return (attributes?[.size] as? Int ?? 0) > 0
+    }
+
+    /// A single line for the row, so the sheet is worth opening only when it
+    /// isn't "all good". Only the required checks count — the advisory ones are
+    /// settings, not grants, and every other pane already reports on them.
+    private static var permissionSummary: String {
+        let missing = DoctorReport.run(settings: SettingsStore.shared.settings)
+            .filter { DoctorReport.requiredKinds.contains($0.kind) && !$0.isOK }
+            .map(\.name)
+        guard !missing.isEmpty else { return "Microphone, Accessibility and the Fn key are all set." }
+        let verb = missing.count == 1 ? "needs" : "need"
+        return "\(missing.formatted(.list(type: .and))) still \(verb) attention."
     }
 
     /// The bundled `.app` carries a real version; a bare binary on `$PATH` has
@@ -126,7 +253,7 @@ private struct FileRow: View {
 
     var body: some View {
         SettingsRow(label: label, description: path, wideControl: true) {
-            Button("Reveal") {
+            Button("Reveal in Finder") {
                 let url = URL(fileURLWithPath: path)
                 NSWorkspace.shared.selectFile(
                     path,

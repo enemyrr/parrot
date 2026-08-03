@@ -181,6 +181,9 @@ private struct LegacyConfig: Decodable {
         return Settings(
             model: resolvedModel,
             languages: languages ?? d.languages,
+            // The TOML config never had a device picker — it recorded from
+            // whatever macOS was using, which is what the default still means.
+            audio: d.audio,
             hotkey: hotkey.flatMap(Hotkey.preset(named:)) ?? d.hotkey,
             latch: LatchSettings(
                 enabled: latch?.enabled ?? d.latch.enabled,
@@ -189,8 +192,10 @@ private struct LegacyConfig: Decodable {
                 maxSeconds: latch?.maxSeconds ?? d.latch.maxSeconds
             ),
             // Squawk postdates the TOML config entirely — there is nothing to
-            // import, and it stays off until someone turns it on.
+            // import, and it stays off until someone turns it on. Style came
+            // with it, so it starts at its defaults too.
             squawk: d.squawk,
+            style: d.style,
             cleanup: CleanupSettings(
                 enabled: cleanup?.enabled ?? d.cleanup.enabled,
                 provider: cleanup?.provider.flatMap(LLMProvider.init(rawValue:))
@@ -210,6 +215,10 @@ private struct LegacyConfig: Decodable {
                     .sorted { $0.key < $1.key }
                     .map { Replacement(from: $0.key, to: $0.value) }
             ),
+            // Shortcuts and integrations both postdate the TOML config, same as
+            // squawk — nothing to import.
+            shortcuts: d.shortcuts,
+            integrations: d.integrations,
             history: HistorySettings(
                 enabled: history?.enabled ?? d.history.enabled,
                 maxEntries: history?.maxEntries ?? d.history.maxEntries
@@ -218,11 +227,10 @@ private struct LegacyConfig: Decodable {
                 enabled: stats?.enabled ?? d.stats.enabled,
                 typingWpm: stats?.typingWpm ?? d.stats.typingWpm
             ),
-            // `overlay.style` was a config key once. The pill's look now
-            // follows the mode rather than a preference, so an imported one is
-            // read and dropped.
+            // `overlay.style` and `overlay.enabled` were config keys once. The
+            // pill's look now follows the mode rather than a preference, and it
+            // no longer switches off, so an imported one is read and dropped.
             overlay: OverlaySettings(
-                enabled: d.overlay.enabled,
                 sensitivity: overlay?.sensitivity ?? d.overlay.sensitivity
             )
         )

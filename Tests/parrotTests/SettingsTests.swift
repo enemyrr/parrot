@@ -20,6 +20,9 @@ final class SettingsCodingTests: XCTestCase {
         original.cleanup.reasoningEffort = .low
         original.wordlist.vocabulary = ["Vercel"]
         original.wordlist.replacements = [Replacement(from: "vercell", to: "Vercel")]
+        original.shortcuts = [
+            TextShortcut(trigger: "my email shortcut", expansion: "andreas@ribban.co")
+        ]
         original.squawk.enabled = true
         original.squawk.hotkey = .control
 
@@ -58,6 +61,80 @@ final class SettingsCodingTests: XCTestCase {
         XCTAssertEqual(settings.model, Settings.default.model)
     }
 
+    // MARK: - Style moving out of squawk
+
+    /// The upgrade path. "About you" and the per-app profiles used to be
+    /// squawk's; a blob written before they moved has no `style` key, and
+    /// reading them back out of `squawk` is the difference between keeping what
+    /// someone wrote and silently resetting it.
+    func testStoredStyleIsReadOutOfTheOldSquawkShape() throws {
+        let settings = try decode("""
+            {"squawk":{"enabled":true,"about":"I'm Andreas.","profiles":[
+              {"name":"Mail","bundleIDs":["com.apple.mail"],"instructions":"Sign off."}
+            ]}}
+            """)
+        XCTAssertEqual(settings.style.about, "I'm Andreas.")
+        // Each old profile becomes a category, and the catch-all is added
+        // behind them so something still answers for every other app.
+        XCTAssertEqual(settings.style.categories.map(\.name), ["Mail", "Other"])
+        XCTAssertEqual(settings.style.category(for: "com.apple.mail").trimmedInstructions, "Sign off.")
+        XCTAssertTrue(settings.squawk.enabled)
+    }
+
+    /// A blob that already has `style` must not have the legacy path stomp it —
+    /// the two keys coexist for exactly one launch.
+    func testStoredStyleWinsOverTheLegacyShape() throws {
+        let settings = try decode("""
+            {"squawk":{"about":"old"},"style":{"about":"new","tone":"casual"}}
+            """)
+        XCTAssertEqual(settings.style.about, "new")
+        XCTAssertEqual(settings.style.fallback.tone, .casual)
+    }
+
+    /// An old blob with neither is every default, including the shipped
+    /// categories — an empty tab bar would look like app matching is broken.
+    func testNoStyleAnywhereTakesTheDefaults() throws {
+        let settings = try decode(#"{"squawk":{"enabled":true}}"#)
+        XCTAssertEqual(settings.style, StyleSettings.default)
+        XCTAssertGreaterThan(settings.style.categories.count, 1)
+    }
+
+    func testStyleRoundTrips() throws {
+        var original = Settings.default
+        original.style.categories[0].tone = .formal
+        original.style.categories[0].length = .thorough
+        original.style.about = "Short and direct."
+
+        let data = try JSONEncoder().encode(original)
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data), original)
+    }
+
+    /// The device picker is in the menu bar, so a blob written before it
+    /// existed is the common case for a long time yet — it has to mean "follow
+    /// the system", which is what parrot did before there was a choice.
+    func testMicrophoneChoiceRoundTripsAndDefaultsToTheSystemDevice() throws {
+        XCTAssertEqual(try decode("{}").audio.inputDeviceUID, "")
+        XCTAssertEqual(try decode(#"{"audio":{}}"#).audio, AudioSettings.default)
+
+        var original = Settings.default
+        original.audio.inputDeviceUID = "AppleUSBAudioEngine:Shure:MV7:1"
+        let data = try JSONEncoder().encode(original)
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data), original)
+    }
+
+    /// Reaching into the system volume is not something an upgrade should start
+    /// doing on its own, so a blob written before the switch existed has to
+    /// decode to off.
+    func testMutingWhileDictatingIsOffUntilItIsAskedFor() throws {
+        XCTAssertFalse(try decode("{}").audio.muteWhileDictating)
+        XCTAssertFalse(try decode(#"{"audio":{"inputDeviceUID":"x"}}"#).audio.muteWhileDictating)
+
+        var original = Settings.default
+        original.audio.muteWhileDictating = true
+        let data = try JSONEncoder().encode(original)
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data), original)
+    }
+
     func testSensitivityIsClampedWheneverItIsSet() throws {
         XCTAssertEqual(try decode(#"{"overlay":{"sensitivity":99}}"#).overlay.sensitivity, 3)
         XCTAssertEqual(try decode(#"{"overlay":{"sensitivity":0}}"#).overlay.sensitivity, 0.25)
@@ -93,6 +170,17 @@ final class SettingsCodingTests: XCTestCase {
                 Replacement(from: "   ", to: "nope"),
                 Replacement(from: "", to: "nope"),
             ]
+        )
+        XCTAssertEqual(wordlist.replacementMap, ["vercell": "Vercel"])
+    }
+
+    /// A trailing space is invisible in the table and would compile into a
+    /// pattern that demands one — the rule would fire mid-sentence and silently
+    /// not before a full stop.
+    func testAReplacementKeyIsTrimmed() {
+        let wordlist = WordlistSettings(
+            vocabulary: [],
+            replacements: [Replacement(from: "vercell ", to: "Vercel")]
         )
         XCTAssertEqual(wordlist.replacementMap, ["vercell": "Vercel"])
     }

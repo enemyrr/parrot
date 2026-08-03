@@ -2,17 +2,25 @@ import SwiftUI
 
 /// Setup, and the health check that used to be `parrot doctor` in a terminal.
 ///
-/// The checks re-run on a timer while this pane is open. Every grant here is
-/// made in System Settings, in another window, and coming back to a stale ✗
-/// with a Refresh button would be the app pretending it couldn't tell.
-struct PermissionsPane: View {
+/// A dialog off About rather than a sidebar row: permissions are something you
+/// finish once, so a permanent row spent the sidebar's attention on a page
+/// nobody opens twice.
+///
+/// The checks re-run on a timer while this is open. Every grant here is made in
+/// System Settings, in another window, and coming back to a stale ✗ with a
+/// Refresh button would be the app pretending it couldn't tell.
+struct PermissionsDialog: View {
     @ObservedObject var store: SettingsStore
+    let dismiss: () -> Void
+
     @StateObject private var checks = CheckPoller()
 
     var body: some View {
-        SettingsPage(
+        SettingsDialog(
             title: "Permissions",
-            subtitle: "parrot needs two grants from macOS, and one keyboard setting."
+            subtitle: "parrot needs two grants from macOS, and one keyboard setting.",
+            width: 560,
+            dismiss: dismiss
         ) {
             SettingsCard(header: "Required") {
                 ForEach(checks.required) { check in

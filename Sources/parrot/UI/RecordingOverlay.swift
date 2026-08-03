@@ -11,6 +11,10 @@ final class RecordingOverlay {
         /// Hands-free — same waveform, plus a lock so it's unmistakable.
         case latched
         case transcribing
+        /// Squawk only: transcription is done and the model has it. Split out
+        /// from `.transcribing` because it is the wait with no predictable
+        /// length, and sitting through it not knowing that is the worst of it.
+        case thinking
     }
 
     /// The panel is deliberately larger than the pill: the slide-in travel and
@@ -303,7 +307,7 @@ struct OverlayPill: View {
     var body: some View {
         content
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             // Scrim sits above the glass, below the waveform: `Glass.tint` barely
             // darkens, and behind-window glass ignores the dark color scheme, so
             // without this the pill goes near-white over bright backdrops.
@@ -328,21 +332,26 @@ struct OverlayPill: View {
 
     @ViewBuilder
     private var content: some View {
-        let accent = OverlayPill.accent(model.mode)
-        switch isHidden ? model.lastVisible : model.state {
+        let shown = isHidden ? model.lastVisible : model.state
+        let accent = OverlayPill.accent(model.mode, shown)
+        switch shown {
         case .hidden, .recording:
-            Waveform(model: model)
+            Waveform(model: model, accent: accent)
         case .latched:
             HStack(spacing: 7) {
-                Waveform(model: model)
+                Waveform(model: model, accent: accent)
                 Image(systemName: "lock.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(accent)
+                    .foregroundStyle(accent.flat)
                     .transition(.blurReplace)
             }
-        case .transcribing:
+        case .transcribing, .thinking:
             BusySpinner(accent: accent)
                 .frame(width: Waveform.size.width, height: Waveform.size.height)
+                // Identified by state so the warm spinner and the violet one
+                // are two views crossfading, not one view whose gradient jumps
+                // — `AnyShapeStyle` won't interpolate on its own.
+                .id(shown)
                 .transition(.blurReplace)
         }
     }
@@ -351,11 +360,64 @@ struct OverlayPill: View {
     /// runs warm against it: the two pills have to be tellable apart in
     /// peripheral vision, and hue carries further than shape does. With the
     /// mode badge gone, colour and waveform are the whole distinction.
-    static func accent(_ mode: DictationMode) -> Color {
+    ///
+    /// Squawk's two waits are not the same wait. Transcribing is still about
+    /// your voice and stays warm; the model working is the one wait whose
+    /// length nobody can predict, and it goes violet. The shift is the only
+    /// place the user is told which of the two they are sitting through.
+    static func accent(_ mode: DictationMode, _ state: RecordingOverlay.State) -> OverlayAccent {
         switch mode {
-        case .dictate: return Color(red: 200/255, green: 222/255, blue: 255/255)
-        case .squawk: return Color(red: 255/255, green: 214/255, blue: 160/255)
+        case .dictate: return .dictate
+        case .squawk: return state == .thinking ? .thinking : .squawk
         }
+    }
+}
+
+/// A hue and the hue it leans toward, lit by a highlight that travels across
+/// both. One flat colour goes dead under glass, and a full spectrum is no
+/// colour at all — two stops a short hue apart read as one colour catching
+/// light, which keeps the accent recognisable from the corner of your eye.
+struct OverlayAccent {
+    let base: Color
+    let tip: Color
+
+    static let dictate = OverlayAccent(
+        base: Color(red: 200/255, green: 222/255, blue: 255/255),
+        tip: Color(red: 168/255, green: 205/255, blue: 255/255)
+    )
+    /// Where the old gold was, leaning into coral.
+    static let squawk = OverlayAccent(
+        base: Color(red: 255/255, green: 216/255, blue: 168/255),
+        tip: Color(red: 255/255, green: 158/255, blue: 138/255)
+    )
+    /// Deliberately far from the dictate blue — the spinner is small, and a
+    /// violet that drifted toward periwinkle would read as the wrong mode.
+    static let thinking = OverlayAccent(
+        base: Color(red: 201/255, green: 162/255, blue: 255/255),
+        tip: Color(red: 232/255, green: 166/255, blue: 255/255)
+    )
+
+    /// For anything too small to carry a gradient — a 10pt glyph reads as mud.
+    var flat: Color { base }
+
+    var style: AnyShapeStyle {
+        AnyShapeStyle(LinearGradient(colors: [base, tip], startPoint: .leading, endPoint: .trailing))
+    }
+
+    /// Back to `base` at the far end so the sweep closes on itself — an
+    /// unmatched seam turning under your eye is all you'd be able to look at.
+    var angularStyle: AnyShapeStyle {
+        AnyShapeStyle(AngularGradient(colors: [base, tip, base], center: .center))
+    }
+
+    /// Same trick horizontally: the wave runs base → tip → base so neither end
+    /// of the stroke is a different colour from the other.
+    func waveShading(width: CGFloat) -> GraphicsContext.Shading {
+        .linearGradient(
+            Gradient(colors: [base, tip, base]),
+            startPoint: .zero,
+            endPoint: CGPoint(x: width, y: 0)
+        )
     }
 }
 
@@ -379,7 +441,7 @@ private extension View {
 /// Accent-coloured spinner — `ProgressView` renders as a grey system spinner
 /// here (`.tint` doesn't reach `NSProgressIndicator`) and clashes with the glass.
 private struct BusySpinner: View {
-    let accent: Color
+    let accent: OverlayAccent
 
     var body: some View {
         TimelineView(.animation) { context in
@@ -387,7 +449,7 @@ private struct BusySpinner: View {
             Circle()
                 .trim(from: 0, to: 0.72)
                 .stroke(
-                    accent,
+                    accent.angularStyle,
                     style: StrokeStyle(lineWidth: 2, lineCap: .round)
                 )
                 .rotationEffect(.degrees(turns.truncatingRemainder(dividingBy: 1) * 360))
@@ -414,6 +476,7 @@ private struct VibrancyBackdrop: NSViewRepresentable {
 /// keeps one shape whichever is running.
 private struct Waveform: View {
     @ObservedObject var model: OverlayModel
+    let accent: OverlayAccent
 
     static let size = CGSize(width: 54, height: 22)
 
@@ -421,9 +484,9 @@ private struct Waveform: View {
         Group {
             switch model.mode {
             case .dictate:
-                TravellingBars(history: model.history, accent: OverlayPill.accent(.dictate))
+                TravellingBars(history: model.history, accent: accent)
             case .squawk:
-                SiriLine(level: model.level, accent: OverlayPill.accent(.squawk))
+                SiriLine(level: model.level, accent: accent)
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)
@@ -434,7 +497,7 @@ private struct Waveform: View {
 /// time rather than one number drawn N times. Newest is rightmost.
 private struct TravellingBars: View {
     let history: [Float]
-    let accent: Color
+    let accent: OverlayAccent
 
     private static let barWidth: CGFloat = 2
     private static let spacing: CGFloat = 2
@@ -443,7 +506,7 @@ private struct TravellingBars: View {
         HStack(spacing: Self.spacing) {
             ForEach(Array(history.enumerated()), id: \.offset) { _, level in
                 Capsule()
-                    .fill(accent)
+                    .fill(accent.style)
                     // Animating height rather than scaleEffect(y:) keeps the
                     // round caps circular instead of squashing them.
                     .frame(
@@ -458,19 +521,36 @@ private struct TravellingBars: View {
 /// Two stroked waves that lie flat when silent and swell with your voice.
 private struct SiriLine: View {
     let level: Float
-    let accent: Color
+    let accent: OverlayAccent
+
+    /// Sweeps per second for the specular highlight. Slow — a glint crossing a
+    /// curved surface, not something scrolling past.
+    private static let sheenSpeed = 0.32
+    /// Half-width of the highlight, as a fraction of the wave. Wide enough to
+    /// look like light and not like a bar travelling along the stroke.
+    private static let sheenSpread: CGFloat = 0.3
 
     var body: some View {
         TimelineView(.animation) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             ZStack {
                 wave(t: t, cycles: 1.6, speed: 0.9, amp: 1, opacity: 1)
-                wave(t: t, cycles: 2.4, speed: -0.65, amp: 0.6, opacity: 0.45)
+                // Half a sweep out of step with the front wave, so the light
+                // crosses the two strokes at different moments rather than
+                // lighting the whole visualiser at once.
+                wave(t: t, cycles: 2.4, speed: -0.65, amp: 0.6, opacity: 0.45, sheenPhase: 0.5)
             }
         }
     }
 
-    private func wave(t: Double, cycles: Double, speed: Double, amp: Double, opacity: Double) -> some View {
+    private func wave(
+        t: Double,
+        cycles: Double,
+        speed: Double,
+        amp: Double,
+        opacity: Double,
+        sheenPhase: Double = 0
+    ) -> some View {
         Canvas { context, size in
             let mid = size.height / 2
             let peak = Double(level) * (size.height / 2 - 1) * amp
@@ -482,12 +562,46 @@ private struct SiriLine: View {
                 let y = mid + sin(u * .pi * 2 * cycles + t * speed) * peak * taper
                 if x == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
             }
+            let stroke = StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+            // Opacity on the context rather than the colour — a gradient has no
+            // single colour to fade, and this way the back wave's sheen is
+            // damped by exactly as much as the wave carrying it.
+            context.opacity = opacity
+            context.stroke(path, with: accent.waveShading(width: size.width), style: stroke)
             context.stroke(
                 path,
-                with: .color(accent.opacity(opacity)),
-                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                with: Self.sheenShading(width: size.width, phase: t * Self.sheenSpeed + sheenPhase, level: level),
+                style: stroke
             )
         }
+    }
+
+    /// A narrow band of light sliding along the stroke. This is where the
+    /// richness comes from: two hues stay legible from the corner of your eye,
+    /// and the life is in light moving over them rather than in more colours.
+    ///
+    /// Transparent at both ends, so the gradient clamps to nothing outside the
+    /// band and the rest of the wave keeps its own colour.
+    private static func sheenShading(
+        width: CGFloat,
+        phase: Double,
+        level: Float
+    ) -> GraphicsContext.Shading {
+        // Brightest while you are actually talking — a glint that answers the
+        // voice, not a loop running on its own whether you speak or not.
+        let strength = 0.16 + 0.5 * Double(level)
+        let half = width * sheenSpread
+        // Enters and leaves fully off the wave, rather than appearing at the edge.
+        let centre = -half + (width + half * 2) * CGFloat(phase - phase.rounded(.down))
+        return .linearGradient(
+            Gradient(stops: [
+                .init(color: .white.opacity(0), location: 0),
+                .init(color: .white.opacity(strength), location: 0.5),
+                .init(color: .white.opacity(0), location: 1),
+            ]),
+            startPoint: CGPoint(x: centre - half, y: 0),
+            endPoint: CGPoint(x: centre + half, y: 0)
+        )
     }
 }
 

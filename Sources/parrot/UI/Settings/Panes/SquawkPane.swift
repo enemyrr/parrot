@@ -15,14 +15,16 @@ struct SquawkPane: View {
             title: "Squawk",
             subtitle: "Say what you want done. It reads the app you're in and writes the answer."
         ) {
-            if !squawk.enabled {
-                offCard
-            } else {
+            enableCard
+
+            if squawk.enabled {
+                providerSection
                 modelCard
-                aboutCard
-                promptCard
-                profilesCard
+                aboutSection
+                voiceCard
+                promptSection
                 contextCard
+                checkCard
                 privacyCard
             }
         }
@@ -30,12 +32,22 @@ struct SquawkPane: View {
         .onChange(of: squawk.provider) { _, new in models.load(new) }
     }
 
-    private var offCard: some View {
-        SettingsCard(footer: "Nothing here runs until it's on: no second key, no reading "
-            + "the screen, no requests.") {
+    /// Always on the page, never only in the off state. A switch that vanishes
+    /// once it is on leaves the feature with no way out of the room it let you
+    /// into — which is what the Integrations pane did until this shape was
+    /// shared with it.
+    private var enableCard: some View {
+        SettingsCard(
+            footer: squawk.enabled
+                ? nil
+                : "Nothing here runs until it's on: no second key, no reading the screen, "
+                    + "no requests."
+        ) {
             SettingsRow(
-                label: "Squawk is off",
-                description: "Turn it on in the Keys tab, then come back to pick a model."
+                label: squawk.enabled ? "Squawk is on" : "Squawk is off",
+                description: squawk.enabled
+                    ? "Hold \(squawk.hotkey.displayName) and say what you want done."
+                    : "Flip this on, then pick a model below."
             ) {
                 Toggle("", isOn: $store.settings.squawk.enabled)
                     .labelsHidden()
@@ -44,27 +56,34 @@ struct SquawkPane: View {
         }
     }
 
-    // MARK: - Model
+    // MARK: - Provider
 
-    private var modelCard: some View {
-        SettingsCard(header: "Model", footer: providerFooter) {
-            SettingsCustomRow(verticalPadding: 12) {
-                HStack(spacing: 10) {
-                    ForEach(LLMProvider.allCases) { provider in
-                        ProviderOption(
-                            provider: provider,
-                            selected: squawk.provider == provider,
-                            available: Self.isAvailable(provider)
-                        ) {
-                            store.settings.squawk.provider = provider
-                            // A model id from one vendor is meaningless to
-                            // another, and sending it produces a 404 mid-squawk.
-                            store.settings.squawk.model = ""
-                        }
+    /// Unboxed, like every other row of pickable cards in the window: each chip
+    /// already draws its own edge, and a card around them is a border whose only
+    /// job is to fence off something that was never ambiguous.
+    private var providerSection: some View {
+        SettingsSection(header: "Provider", footer: providerFooter) {
+            HStack(spacing: 10) {
+                ForEach(LLMProvider.allCases) { provider in
+                    ProviderOption(
+                        provider: provider,
+                        selected: squawk.provider == provider,
+                        available: Self.isAvailable(provider)
+                    ) {
+                        store.settings.squawk.provider = provider
+                        // A model id from one vendor is meaningless to
+                        // another, and sending it produces a 404 mid-squawk.
+                        store.settings.squawk.model = ""
                     }
                 }
             }
+        }
+    }
 
+    // MARK: - Model
+
+    private var modelCard: some View {
+        SettingsCard(header: "Model") {
             if squawk.provider != .apple {
                 SettingsRow(
                     label: "Model",
@@ -132,86 +151,95 @@ struct SquawkPane: View {
             + "applies to it."
     }
 
-    // MARK: - About
+    // MARK: - Style
 
-    private var aboutCard: some View {
-        SettingsCard(
+    /// Who you are, plus a way through to how each app is written for.
+    ///
+    /// "About you" is edited here rather than in Style because it is the one
+    /// thing on either screen that squawk uses and dictation cannot: dictation
+    /// repairs a transcript, and repairing it never requires knowing who said
+    /// it. In Style it had to sit under a tab bar that scoped everything else to
+    /// one category, so the page said "this category" and then quietly stopped
+    /// meaning it.
+    ///
+    /// Tone and length stay in Style, and this shows what they currently are —
+    /// a squawk is written by those settings as much as by anything on this
+    /// screen, and finding that out by surprise is how a feature earns a
+    /// reputation for ignoring you.
+    private var aboutSection: some View {
+        SettingsSection(
             header: "About you",
-            footer: "Goes into every squawk, in every app. Who you are, how you sign off, "
-                + "how you write."
+            footer: "Goes into every squawk, in every app. Who you are, what you do, what "
+                + "languages you write in. This one is squawk's alone."
         ) {
-            SettingsCustomRow(verticalPadding: 12) {
+            CommittedText(text: $store.settings.style.about) { draft in
                 PromptEditor(
-                    text: $store.settings.squawk.about,
-                    placeholder: "I'm Andreas, I run a staffing company in Sweden. I write "
-                        + "short and direct, no corporate padding. I sign off with just my "
-                        + "first name. I write Swedish with Swedish colleagues and English "
-                        + "with everyone else.",
+                    text: draft,
+                    placeholder: "I'm Andreas, I run a staffing company in Sweden. I "
+                        + "write short and direct, no corporate padding. I sign off "
+                        + "with just my first name. I write Swedish with Swedish "
+                        + "colleagues and English with everyone else.",
                     minHeight: 90
                 )
             }
         }
     }
 
+    private var voiceCard: some View {
+        SettingsCard(
+            header: "Voice",
+            footer: "Tone and length are shared with dictation, so the two write as the same "
+                + "person."
+        ) {
+            SettingsDialogRow(
+                label: "Tone and length",
+                value: summary,
+                action: "Open Style"
+            ) {
+                SettingsWindowController.shared.show(pane: .style)
+            }
+        }
+    }
+
+    /// No "nothing about you yet" any more — the editor for it is the row above,
+    /// so the reminder would be pointing at itself.
+    private var summary: String {
+        let style = store.settings.style
+        let count = style.categories.count
+        let categories = count == 1 ? "1 category" : "\(count) categories"
+        return "\(categories) · \(style.fallback.tone.displayName) by default"
+    }
+
     // MARK: - Prompt
 
-    private var promptCard: some View {
-        SettingsCard(
+    private var promptSection: some View {
+        SettingsSection(
             header: "Base prompt",
             footer: "The rules of the mode itself — what \"rewrite this\" means, what "
                 + "\"answer this\" means, and that only the text comes back. Leave it empty "
                 + "for the built-in one."
         ) {
-            SettingsCustomRow(verticalPadding: 12) {
-                VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                CommittedText(text: $store.settings.squawk.prompt) { draft in
                     PromptEditor(
-                        text: $store.settings.squawk.prompt,
+                        text: draft,
                         placeholder: SquawkPrompt.base,
                         minHeight: 140
                     )
-                    HStack {
-                        Button("Start from the built-in") {
-                            store.settings.squawk.prompt = SquawkPrompt.base
-                        }
-                        .disabled(!squawk.prompt.isEmpty)
-                        Button("Reset to default") {
-                            store.settings.squawk.prompt = ""
-                        }
-                        .disabled(squawk.prompt.isEmpty)
-                        Spacer()
-                    }
                 }
-            }
-        }
-    }
-
-    // MARK: - Profiles
-
-    private var profilesCard: some View {
-        SettingsCard(
-            header: "Per-app instructions",
-            footer: "First match wins. An email and a chat message want different answers "
-                + "to the same instruction, and nothing else can tell them apart."
-        ) {
-            ForEach($store.settings.squawk.profiles) { $profile in
-                ProfileRow(profile: $profile) {
-                    store.settings.squawk.profiles.removeAll { $0.id == profile.id }
-                }
-            }
-
-            SettingsCustomRow(verticalPadding: 10) {
-                HStack {
-                    Button {
-                        store.settings.squawk.profiles.append(
-                            AppProfile(name: "New app", bundleIDs: [], instructions: "")
-                        )
-                    } label: {
-                        Label("Add an app", systemImage: "plus")
+                HStack(spacing: 8) {
+                    Button("Load the built-in prompt") {
+                        store.settings.squawk.prompt = SquawkPrompt.base
                     }
+                    .controlSize(.small)
+                    .disabled(!squawk.prompt.isEmpty)
+
+                    Button("Reset to default") {
+                        store.settings.squawk.prompt = ""
+                    }
+                    .controlSize(.small)
+                    .disabled(squawk.prompt.isEmpty)
                     Spacer()
-                    Button("Restore the defaults") {
-                        store.settings.squawk.profiles = AppProfile.starters
-                    }
                 }
             }
         }
@@ -260,43 +288,38 @@ struct SquawkPane: View {
                     .toggleStyle(.switch)
             }
 
-            SettingsCustomRow(verticalPadding: 12) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 10) {
-                        Button {
-                            inspector.run(settings: squawk)
-                        } label: {
-                            Label(
-                                inspector.isRunning
-                                    ? "Reading…"
-                                    : "Show me what you'd send",
-                                systemImage: "eye"
-                            )
-                        }
-                        .disabled(inspector.isRunning)
+        }
+    }
 
-                        Text("Switch to another app first — it reads whatever is in front "
-                            + "\(Int(ContextInspector.delay))s after you click.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
+    // MARK: - Check
+
+    /// The same shape as the Integrations pane's check, because it is the same
+    /// errand: switch away, let it read, see exactly what it saw.
+    private var checkCard: some View {
+        SettingsCard(
+            header: "Check",
+            footer: "Switch to the app you want to test and leave it in front. parrot reads "
+                + "it \(Int(ContextInspector.delay)) seconds later and shows what it found."
+        ) {
+            SettingsCustomRow(verticalPadding: 10) {
+                HStack(spacing: 10) {
+                    Button(inspector.isRunning ? "Reading…" : "Show me what you'd send") {
+                        inspector.run(settings: squawk, style: store.settings.style)
+                    }
+                    .controlSize(.small)
+                    .disabled(inspector.isRunning)
+
+                    if inspector.isRunning {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
                     }
 
-                    if let report = inspector.report {
-                        ScrollView {
-                            Text(report)
-                                .font(.system(size: 11, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8)
-                        }
-                        .frame(height: 220)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(SettingsPalette.keycapFill)
-                        )
-                    }
+                    Spacer()
+                }
+            }
+
+            if let report = inspector.report {
+                SettingsCustomRow(verticalPadding: 10) {
+                    ProbeReport(text: report)
                 }
             }
         }
@@ -307,94 +330,35 @@ struct SquawkPane: View {
     private var privacyCard: some View {
         SettingsCard(
             header: "Never read",
-            footer: "Password managers and the login window are excluded no matter what — "
-                + "that list isn't editable. Add anything else here, by bundle id."
+            footer: "The locked ones hold whatever the settings say — a password manager's "
+                + "window is a list of passwords. Every password manager parrot knows is "
+                + "covered, installed or not; only the ones on this Mac are shown. Add your "
+                + "own with the picker, or by bundle id for an app that isn't on this Mac."
         ) {
             SettingsCustomRow(verticalPadding: 12) {
-                TokenListEditor(
-                    tokens: $store.settings.squawk.excludedBundleIDs,
-                    placeholder: "Bundle id — com.example.App",
-                    normalize: { $0.trimmingCharacters(in: .whitespaces) },
-                    validate: { $0.contains(".") }
+                AppChipList(
+                    bundleIDs: $store.settings.squawk.excludedBundleIDs,
+                    locked: builtInExclusions,
+                    lockedHelp: "Never read, whatever the settings say",
+                    addLabel: "Exclude apps…",
+                    pickerMessage: "Choose the apps squawk should never read."
                 )
             }
         }
     }
-}
 
-/// One app profile: what it's called, which apps it claims, what to tell the
-/// model when you're in one of them.
-private struct ProfileRow: View {
-    @Binding var profile: AppProfile
-    let delete: () -> Void
-
-    var body: some View {
-        SettingsCustomRow(verticalPadding: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Toggle("", isOn: $profile.enabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                    TextField("Name", text: $profile.name)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 150)
-                    Spacer(minLength: 0)
-                    Button(role: .destructive, action: delete) {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                }
-
-                TokenListEditor(
-                    tokens: $profile.bundleIDs,
-                    placeholder: "Bundle id — com.apple.mail, or com.google.Chrome*",
-                    normalize: { $0.trimmingCharacters(in: .whitespaces) },
-                    validate: { $0.contains(".") }
-                )
-
-                PromptEditor(
-                    text: $profile.instructions,
-                    placeholder: "How to write for this app.",
-                    minHeight: 54
-                )
-            }
-            .opacity(profile.enabled ? 1 : 0.5)
-        }
-    }
-}
-
-/// A plain multi-line editor with a placeholder, which `TextEditor` has no
-/// notion of.
-struct PromptEditor: View {
-    @Binding var text: String
-    let placeholder: String
-    var minHeight: CGFloat = 80
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            if text.isEmpty {
-                Text(placeholder)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 8)
-                    .allowsHitTesting(false)
-            }
-            TextEditor(text: $text)
-                .font(.system(size: 11))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: minHeight)
-        }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(SettingsPalette.keycapFill)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(SettingsPalette.keycapBorder, lineWidth: 0.5)
-        )
+    /// The always-excluded apps that are actually on this Mac, resolved to icons
+    /// and names. Cheap on redraw — `AppCatalog` caches, so this is a handful of
+    /// dictionary hits.
+    ///
+    /// The full list is eight entries of password managers nobody has all of, and
+    /// a row of greyed-out apps you don't own reads as a list of things parrot
+    /// failed to find rather than a list of things it protects. The exclusions
+    /// still apply to every one of them — this only decides what's worth showing.
+    private var builtInExclusions: [AppIdentity] {
+        ScreenReader.alwaysExcluded
+            .map { AppCatalog.identity(named: $0.name, anyOf: $0.bundleIDs) }
+            .filter(\.isInstalled)
     }
 }
 
@@ -411,7 +375,7 @@ private final class ContextInspector: ObservableObject {
     @Published var report: String?
     @Published var isRunning = false
 
-    func run(settings: SquawkSettings) {
+    func run(settings: SquawkSettings, style: StyleSettings) {
         guard !isRunning else { return }
         isRunning = true
         report = nil
@@ -432,12 +396,12 @@ private final class ContextInspector: ObservableObject {
                     : ScreenReader.capture(target, limits: limits)
             }.value
 
-            let profile = settings.profile(for: context.bundleID)
+            let category = style.category(for: context.bundleID)
             self.report = """
                 \(ContextCommand.report(context, full: true))
 
-                ── profile
-                \(profile?.name ?? "none — the base prompt and About you only")
+                ── style
+                \(category.name) · \(category.tone.displayName) · \(category.length.displayName)
                 """
             self.isRunning = false
         }

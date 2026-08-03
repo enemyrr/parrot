@@ -72,8 +72,8 @@ which one, in three words, and it writes the rest.
 The pill tells the two apart: dictation is a scrolling bar meter in cool blue,
 squawk is a wave with a `✦` in warm amber.
 
-Squawk is **off by default**. Turn it on in the **Keys** tab; pick the model in
-the **Squawk** tab.
+Squawk is **off by default**. Turn it on under **General ▸ Shortcuts**; pick the
+model in the **Squawk** tab.
 
 ### What it can see
 
@@ -102,13 +102,15 @@ cost of those apps returning nothing.
 
 ### Telling it who you are
 
-Three layers, all editable in the Squawk tab:
+Three layers. The first two are in the Squawk tab, the third is a category in
+Style:
 
 - **Base prompt** — the rules of the mode. What "rewrite this" means, what
   "answer this" means, that only the text comes back.
 - **About you** — "I'm Andreas, I run a staffing company, I sign off with just
   my first name, I write Swedish with Swedish colleagues." Goes into every
-  squawk.
+  squawk. Squawk's alone — dictation repairs what you said, and repairing it
+  never needs to know who said it.
 - **Per-app instructions** — Mail gets a greeting and a sign-off; Messages gets
   one lowercase line; Slack gets a short paragraph. First match wins.
 
@@ -140,16 +142,13 @@ Everything lives in one window — `parrot settings`, or **Settings…** in the 
 
 | Tab | What's in it |
 |---|---|
-| **General** | Spoken languages, start-at-login, where the log lives |
-| **Keys** | Both hotkeys — dictation and squawk — and the hands-free timings |
+| **General** | Both hotkeys, spoken languages, microphone, start-at-login. Each opens a dialog; meter sensitivity and the log live under Advanced |
 | **Squawk** | The model behind squawk, what it knows about you, per-app instructions, what it may read |
 | **Models** | Which model, download progress, size on disk, delete |
 | **Cleanup** | Raw vs cleaned, provider, prompt |
 | **Dictionary** | Vocabulary and find → replace rules |
-| **Appearance** | The recording pill's look, with a live microphone preview |
-| **Accounts** | API keys, and what is currently using each one |
 | **History** | Recent transcripts, usage totals, retention |
-| **Permissions** | Microphone, Accessibility and the Fn key mapping, re-checked live |
+| **About** | Setup you finish once, behind the parrot glyph under the sidebar: **Permissions** (microphone, Accessibility, the Fn key mapping, re-checked live) and **Accounts** (API keys, and what is currently using each one), each a dialog |
 
 **Changes apply immediately** — no restart, no file to edit. Settings are stored in macOS preferences (`com.digimata.parrot`), API keys in the Keychain.
 
@@ -166,7 +165,7 @@ A recorded shortcut needs a modifier, or has to be a function key. parrot watche
 An opt-in second pass that fixes punctuation, capitalization and sentence breaks, and drops filler words. Off by default.
 
 - **Apple** runs on-device (macOS 26+) — no key, no network, nothing leaves the machine.
-- **Anthropic** and **OpenAI** call their APIs. Paste the key in the Accounts tab, or use `parrot key set`; either way it goes in the Keychain, never in a settings file. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` work as a fallback.
+- **Anthropic** and **OpenAI** call their APIs. Paste the key in **About → Accounts**, or use `parrot key set`; either way it goes in the Keychain, never in a settings file. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` work as a fallback.
 
 If cleanup fails, times out, or returns something implausible, parrot injects the raw transcript instead. **Dictation never blocks on a language model.**
 
@@ -246,7 +245,7 @@ Both Parakeets are NVIDIA Parakeet TDT 0.6B, running on the Neural Engine via Fl
 - **Languages outside Parakeet's 25.** Japanese, Korean, Arabic, Hindi, Thai and the rest.
 - **Steering.** Your Dictionary vocabulary is sent as `keywords`, and your spoken languages as `languages`, so they condition the decode instead of patching its output afterwards. That's the difference between the model hearing "Vercel" and a find/replace fixing "vercell" after the fact.
 
-Pick it in the Models tab; the key lives in Accounts.
+Pick it under **Models**; the key lives in **About → Accounts**.
 
 ## Stack
 

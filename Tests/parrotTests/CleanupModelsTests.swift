@@ -70,4 +70,53 @@ final class CleanupModelsTests: XCTestCase {
             XCTAssertEqual("\(error)", "couldn't read the model list")
         }
     }
+
+    // MARK: - Cache
+
+    /// A scratch suite, so a test run can't drop the list the app is using.
+    private static let suite = "com.digimata.parrot.tests.modelcache"
+
+    override func setUp() {
+        super.setUp()
+        UserDefaults().removePersistentDomain(forName: Self.suite)
+        CleanupModels.Cache.defaults = UserDefaults(suiteName: Self.suite)!
+    }
+
+    private let models = [CleanupModels.Model(id: "gpt-5", displayName: "gpt-5")]
+
+    func testServesASavedListBack() {
+        CleanupModels.Cache.save(models, for: .openai, key: "sk-one")
+        XCTAssertEqual(CleanupModels.Cache.load(.openai, key: "sk-one"), models)
+    }
+
+    /// Each provider's list is its own; one saving must not answer for another.
+    func testKeepsProvidersApart() {
+        CleanupModels.Cache.save(models, for: .openai, key: "sk-one")
+        XCTAssertNil(CleanupModels.Cache.load(.anthropic, key: "sk-one"))
+    }
+
+    /// A new key is a different account, which can reach a different set of
+    /// models — serving the old list would show models it can't call.
+    func testMissesWhenTheKeyChanged() {
+        CleanupModels.Cache.save(models, for: .openai, key: "sk-one")
+        XCTAssertNil(CleanupModels.Cache.load(.openai, key: "sk-two"))
+    }
+
+    func testExpiresAfterADay() {
+        CleanupModels.Cache.save(models, for: .openai, key: "sk-one")
+        let lifetime = CleanupModels.Cache.lifetime
+        XCTAssertNotNil(
+            CleanupModels.Cache.load(.openai, key: "sk-one", now: Date().addingTimeInterval(lifetime - 60))
+        )
+        XCTAssertNil(
+            CleanupModels.Cache.load(.openai, key: "sk-one", now: Date().addingTimeInterval(lifetime + 60))
+        )
+    }
+
+    /// An empty list is a picker with nothing in it; caching that for a day
+    /// would strand someone whose key was briefly rejected.
+    func testDoesNotServeAnEmptyList() {
+        CleanupModels.Cache.save([], for: .openai, key: "sk-one")
+        XCTAssertNil(CleanupModels.Cache.load(.openai, key: "sk-one"))
+    }
 }

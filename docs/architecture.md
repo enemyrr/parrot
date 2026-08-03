@@ -28,6 +28,17 @@ Transcription is on-device, full stop. Text *cleanup* — fixing punctuation and
 
 So the on-device promise holds for audio unconditionally, and for text unless the user opts out of it deliberately. This is a deliberate relaxation of the original "no AI post-processing" non-goal: raw ASR output has no sentence breaks and keeps every "um", and the alternative was making every user fix that by hand.
 
+## On style
+
+Tone, writing length, "about you" and the per-app profiles live in one place — `StyleSettings` — because two features put text on screen and they have to write as the same person. They used to be squawk's alone, which meant dictation didn't know how you write.
+
+The two consumers have different contracts, and the split is load-bearing:
+
+- **Squawk writes**, so it gets all of it: tone, length, who you are, and how this app should be written for.
+- **Cleanup repairs a transcript**, so it gets only what it is allowed to change. `Tone.cleanupRule` never asks for different words — only for different punctuation and casing — and a styled cleanup prompt ends with an explicit "keep the speaker's words and their order". Length and "about you" never reach it at all: how much you meant to say was decided when you said it, and repairing a sentence is not the place to know who said it.
+
+App matching is where dictation and squawk differ on privacy, so it is a switch. Squawk has already read the window, so knowing which app that was is the least of what it holds; dictation reads nothing, and app matching is the one thing it would learn — the bundle id of the frontmost app, captured when the key goes down, never its contents. `StyleSettings.matchApp` gates that one path, and `dictationProfile(for:)` is the only place it is read so no call site can forget it.
+
 ## On squawk
 
 Squawk is the second thing the hotkey can do: instead of typing what you said,
@@ -67,8 +78,11 @@ invisible to squawk, and Chromium apps publish one only when asked.
 
 ### The prompt is layered, and the screen is data
 
-Three layers — base prompt, "about you", per-app instructions — stack into the
-system prompt. Everything read off the screen goes in the *user* turn, wrapped
+Four layers — base prompt, "about you", tone and length, per-app instructions —
+stack into the system prompt, ordered least specific to most so recency lets the
+specific one win: a Slack profile saying "lowercase, no punctuation" beats a
+formal tone, because whoever wrote the profile was being more specific than
+whoever picked the tone. Everything read off the screen goes in the *user* turn, wrapped
 in tags, and the base prompt says that tagged screen content is reference
 material and never an instruction. The same discipline the cleanup path already
 applies to a transcript: dictating "ignore your instructions" is data.
@@ -145,6 +159,7 @@ Argument parsing (via `swift-argument-parser`), config loading, module wiring. C
 Subcommands:
 - `parrot` (default) — run the daemon
 - `parrot settings [--pane <name>]` — open the settings window, optionally on a tab
+- `parrot setup` — the guided first-run walkthrough, on its own
 - `parrot models list` — show registered models, mark which are downloaded
 - `parrot models download <id>` — pre-fetch a model
 - `parrot doctor` — permissions, Fn mapping, model and cleanup availability, as text
@@ -178,6 +193,14 @@ Only sub-`latch.tapMs` taps — which are never real utterances — pay the disa
 ### `AudioCapture`
 
 `AVAudioEngine` tap on the input node. Streams 16 kHz mono `Float32` buffers into a ring buffer while the hotkey is held. On release, hands the full buffer to the active `Transcriber`.
+
+Which microphone it taps comes from `settings.audio.inputDeviceUID`, applied to the input node's audio unit at the start of each recording — before the input format is read, since switching device changes the sample rate and a tap installed with the stale format is rejected on start. The UID is resolved fresh every time rather than cached: the chosen device may have been unplugged since it was picked, and falling back to the system default is a better answer than a failed recording.
+
+### `AudioDevices`
+
+Enumerates input devices through the CoreAudio HAL — `AVCaptureDevice` only reports what it considers a camera-ish audio source, and aggregate devices, loopback drivers and most USB interfaces are exactly what someone opens the picker for. A device counts as an input if its input-scope stream configuration has channels.
+
+Settings store the CoreAudio **UID**, not the device id: the id is assigned per boot and would name a different device — or nothing — the next morning.
 
 ### `Transcriber` (protocol)
 
@@ -261,6 +284,8 @@ This, plus the menu bar item, is why the process needs an `NSApplication` run lo
 
 The submenu is populated in `menuNeedsUpdate(_:)` rather than pushed on every transcript. That keeps the injection path free of UI work and makes stale entries structurally impossible: the list is built at the moment it's shown.
 
+A **Microphone** submenu sits beside it, built the same way and for the same reason — devices come and go while the app runs, so a list built at launch would offer headphones that were unplugged an hour ago. It ticks the active choice, names the device "System Default" currently resolves to, and writes straight into `SettingsStore`, so a change made here persists and reaches the daemon exactly like one made in the settings window. It takes effect on the next recording; swapping the device out from under one in flight would end it with half a sentence. A stored device that isn't plugged in gets a disabled row saying so, rather than a silent fallback that makes the setting look like it reset itself.
+
 Clicking a transcript **copies it** rather than re-injecting. By the time the menu closes, focus has returned to whatever app was underneath, and typing into it uninvited is a worse surprise than a clipboard write.
 
 Since the process runs `.accessory` — no dock icon, no window — this is the only persistent surface the user can actually see and click.
@@ -317,9 +342,25 @@ Everything used to be assembled once inside `Run.run()` and then frozen — chan
 
 Warm-up is no longer blocking. It used to pump the runloop against a semaphore so the download pill could animate; now the app comes up immediately and the engine's state is reported in the menu bar and in the settings window's status bar.
 
+## First run
+
+The daemon shows `OnboardingWindowController` the first time it starts, before the engine and the hotkey tap, and records that it did under its own `UserDefaults` key (`onboarding.completed`) — not on `Settings`, which is what the user configures rather than what parrot has shown. `parrot setup` and a button in the Permissions tab bring it back.
+
+Five steps, in the order they depend on each other: welcome → microphone → accessibility → key → try it. The Permissions tab says all of the same things, but it says them at once, next to ten other tabs, to someone who has not yet seen parrot do anything.
+
+Three things it does that a checklist can't:
+
+- **The microphone step proves the mic works** rather than reporting that it's allowed — a granted permission and the right input device are not the same thing. It opens its own `AudioCapture` (the daemon's belongs to the hotkey, and the window also opens with no daemon behind it) and drives `OverlayModel`, so the meter here is calibrated exactly like the recording pill's.
+- **Nothing needs a Refresh button.** Every grant lands in another process, so `OnboardingChecks` polls microphone, accessibility and — only when Fn is the chosen key — the Fn mapping, once a second while the window is open.
+- **It ends in the user's own voice landing in a text field.** The last step focuses a scratch field and shows the model download's progress; because injection goes to whatever is frontmost, the first dictation needs no plumbing beyond that focus.
+
+Skipping is always possible. A grant can fail for reasons parrot can't see, and trapping someone on step three would be worse than letting them through to a menu bar icon that says what's still missing. Closing the window counts as finishing it — reopening on every launch until someone reaches the end would be nagging.
+
+While it's open, `showSetupWindowOnce` stands down: a settings window over the top would be two setups at once, disagreeing about which step you are on.
+
 ## Permissions
 
-Two grants, surfaced in the **Permissions** tab and in `parrot doctor`:
+Two grants, surfaced in the setup window, the **Permissions** tab and `parrot doctor`:
 
 1. **Microphone** — standard `AVCaptureDevice` request, which the pane can trigger directly.
 2. **Accessibility** — required for `CGEventTap` (hotkey) and `CGEvent` posting (text injection). Only System Settings can grant it, so the pane's button opens that pane rather than pretending to fix it.
@@ -348,8 +389,8 @@ Both are Parakeet TDT 0.6B. v3 traded a little English accuracy for 24 extra lan
 ## Data flow, end-to-end
 
 1. User runs `parrot` in a terminal.
-2. Any legacy `config.toml` is imported once, then `DictationController` reads `Settings` and instantiates modules. The model warms up in the background rather than blocking startup; if it isn't downloaded, the settings window opens on the Models tab and the fetch starts there.
-3. Sets `.accessory` activation policy and enters `NSApp.run()`. Status: `listening`. Overlay hidden. If Accessibility is missing, the Permissions tab opens instead and the controller polls until the grant lands.
+2. Any legacy `config.toml` is imported once, then `DictationController` reads `Settings` and instantiates modules. On a first run the setup window opens here. The model warms up in the background rather than blocking startup; if it isn't downloaded, the fetch starts anyway — reported inside the setup window if it's up, and on the Models tab if it isn't.
+3. Sets `.accessory` activation policy and enters `NSApp.run()`. Status: `listening`. Overlay hidden. If Accessibility is missing, the Permissions tab opens instead (unless setup is already asking for it) and the controller polls until the grant lands.
 4. User holds Fn (or double-taps it).
 5. `HotkeyMonitor` fires `.begin`. `RecordingOverlay` shows. Status: `recording`.
 6. `AudioCapture` starts the AVAudioEngine tap. Buffers fill. Overlay animates mic level.
@@ -431,6 +472,7 @@ parrot/
 
     Audio/
       AudioCapture.swift        # AVAudioEngine tap + ring buffer
+      AudioDevices.swift        # CoreAudio input-device enumeration
 
     Input/
       HotkeyMonitor.swift       # CGEventTap + latch state machine
@@ -443,7 +485,7 @@ parrot/
 
     UI/
       RecordingOverlay.swift    # borderless NSWindow + SwiftUI pill
-      MenuBarController.swift   # NSStatusItem + recent transcripts
+      MenuBarController.swift   # NSStatusItem + recent transcripts + mic picker
       ParrotGlyph.swift         # the bird, as inline SVG
       Settings/
         SettingsWindowController.swift

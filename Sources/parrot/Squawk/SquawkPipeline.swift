@@ -2,7 +2,11 @@ import Foundation
 
 /// Everything between "audio stopped" and "an answer at the cursor":
 ///
-///     transcribe → wordlist → prompt → model → guard → inject
+///     transcribe → wordlist → shortcuts → prompt → model → guard → inject
+///
+/// Shortcuts expand into the *instruction*, not the answer: "rewrite this the
+/// concise way shortcut" is exactly the case they exist for, and what the model
+/// writes back is its own text to get right.
 ///
 /// The screen was already read, back when the key went down — see
 /// `DictationController`. By the time this runs it is waiting on the model and
@@ -10,8 +14,12 @@ import Foundation
 struct SquawkPipeline {
     let transcriber: Transcriber
     let wordlist: Wordlist
+    let shortcuts: ShortcutExpander
     let client: LLMClient
     let settings: SquawkSettings
+    /// Who you are, and the categories carrying tone and length. Shared with
+    /// dictation — see `StyleSettings`.
+    let style: StyleSettings
     let store: TranscriptStore?
     let stats: StatsStore?
     let transcription: TranscriptionContext
@@ -19,6 +27,10 @@ struct SquawkPipeline {
     /// gives the model nothing to read the language off.
     let languages: [String]
     let modelID: String
+    /// Fires when transcription is done and the model takes over. From outside,
+    /// the two waits are one long pause; they are nothing alike in length, and
+    /// the overlay is the only thing that can say which one you are in.
+    let onThinking: @Sendable () -> Void
 
     struct Output {
         let text: String
@@ -48,7 +60,8 @@ struct SquawkPipeline {
             return nil
         }
 
-        let instruction = wordlist.apply(to: raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        let instruction = shortcuts.apply(to: wordlist.apply(to: raw))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instruction.isEmpty else {
             FileHandle.standardError.write(Data("🦜 (silence)\n".utf8))
             return nil
@@ -63,7 +76,8 @@ struct SquawkPipeline {
         let request = LLMRequest(
             system: SquawkPrompt.system(
                 settings: settings,
-                profile: settings.profile(for: context?.bundleID),
+                style: style,
+                category: style.category(for: context?.bundleID),
                 languages: languages
             ),
             user: SquawkPrompt.user(instruction: instruction, context: context),
@@ -75,6 +89,8 @@ struct SquawkPipeline {
         FileHandle.standardError.write(Data(
             "🦜 \"\(instruction)\" · \(context.map(Self.describe) ?? "no context")\n".utf8
         ))
+
+        onThinking()
 
         let answer: String
         do {

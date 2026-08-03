@@ -2,21 +2,23 @@ import SwiftUI
 
 /// Both keys, and how they behave when you hold or tap them.
 ///
-/// Split out of General once there were two of them: a pane that opens on
-/// "which key starts which mode" is a different question from "does parrot
-/// start at login", and the hotkeys are the thing people actually come here to
-/// change.
-struct KeysPane: View {
+/// Was a sidebar pane of its own. It is the thing people come here to change
+/// once and then never look at again, which is exactly the shape of a dialog
+/// rather than of a permanent row in the sidebar.
+struct ShortcutsDialog: View {
     @ObservedObject var store: SettingsStore
+    let dismiss: () -> Void
 
     var body: some View {
-        SettingsPage(
-            title: "Keys",
-            subtitle: "One key types what you say. The other answers for you."
+        SettingsDialog(
+            title: "Shortcuts",
+            subtitle: "One key types what you say. The other answers for you.",
+            dismiss: dismiss
         ) {
             dictationCard
             squawkCard
-            latchCard
+            handsFreeCard
+            AdvancedDisclosure { timingCard }
         }
     }
 
@@ -130,10 +132,12 @@ struct KeysPane: View {
 
     // MARK: - Hands-free
 
-    private var latchCard: some View {
+    private var latchEnabled: Bool { store.settings.latch.enabled }
+
+    private var handsFreeCard: some View {
         SettingsCard(
             header: "Hands-free",
-            footer: store.settings.latch.enabled
+            footer: latchEnabled
                 ? "Applies to both keys."
                 : "With this off, a quick tap of either key is treated as a very short recording."
         ) {
@@ -145,97 +149,63 @@ struct KeysPane: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
             }
-
-            if store.settings.latch.enabled {
-                SettingsRow(
-                    label: "Tap threshold",
-                    description: "A hold shorter than this counts as a tap, not speech."
-                ) {
-                    StepperSlider(
-                        value: Binding(
-                            get: { Double(store.settings.latch.tapMs) },
-                            set: { store.settings.latch.tapMs = Int($0) }
-                        ),
-                        range: 120...600,
-                        step: 10,
-                        format: { "\(Int($0)) ms" }
-                    )
-                }
-
-                SettingsRow(
-                    label: "Double-tap window",
-                    description: "How long the second tap has to land."
-                ) {
-                    StepperSlider(
-                        value: Binding(
-                            get: { Double(store.settings.latch.windowMs) },
-                            set: { store.settings.latch.windowMs = Int($0) }
-                        ),
-                        range: 150...600,
-                        step: 10,
-                        format: { "\(Int($0)) ms" }
-                    )
-                }
-
-                SettingsRow(
-                    label: "Safety stop",
-                    description: "A forgotten hands-free recording stops itself after this."
-                ) {
-                    StepperSlider(
-                        value: Binding(
-                            get: { Double(store.settings.latch.maxSeconds) },
-                            set: { store.settings.latch.maxSeconds = Int($0) }
-                        ),
-                        range: 30...900,
-                        step: 30,
-                        format: { $0 < 60 ? "\(Int($0))s" : "\(Int($0) / 60) min" }
-                    )
-                }
-            }
         }
     }
-}
 
-/// One selectable modifier, drawn as the key it is.
-struct HotkeyOption: View {
-    let hotkey: Hotkey
-    let selected: Bool
-    var disabled = false
-    let select: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: select) {
-            VStack(spacing: 6) {
-                Text(hotkey.modifiers.symbols)
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .frame(height: 20)
-                Text(hotkey.displayName)
-                    .font(.system(size: 10))
-                    .foregroundStyle(selected ? .primary : .secondary)
+    /// Three numbers nobody needs the first week, and one of them is measured in
+    /// milliseconds. They stay behind the disclosure — greyed rather than hidden
+    /// when latching is off, so it is obvious what switching it on would buy.
+    private var timingCard: some View {
+        SettingsCard(
+            header: "Hands-free timing",
+            footer: latchEnabled ? nil : "Switch on double-tap to latch to use these."
+        ) {
+            SettingsRow(
+                label: "Tap threshold",
+                description: "A hold shorter than this counts as a tap, not speech."
+            ) {
+                StepperSlider(
+                    value: Binding(
+                        get: { Double(store.settings.latch.tapMs) },
+                        set: { store.settings.latch.tapMs = Int($0) }
+                    ),
+                    range: 120...600,
+                    step: 10,
+                    format: { "\(Int($0)) ms" }
+                )
             }
-            .frame(width: 62, height: 54)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.16) : SettingsPalette.keycapFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(
-                        selected ? Color.accentColor : SettingsPalette.keycapBorder,
-                        lineWidth: selected ? 1.5 : 0.5
-                    )
-            )
-            .opacity(disabled ? 0.35 : 1)
-            .scaleEffect(hovering && !selected && !disabled ? 1.03 : 1)
-            .animation(.easeOut(duration: 0.12), value: hovering)
-            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: selected)
+
+            SettingsRow(
+                label: "Double-tap window",
+                description: "How long the second tap has to land."
+            ) {
+                StepperSlider(
+                    value: Binding(
+                        get: { Double(store.settings.latch.windowMs) },
+                        set: { store.settings.latch.windowMs = Int($0) }
+                    ),
+                    range: 150...600,
+                    step: 10,
+                    format: { "\(Int($0)) ms" }
+                )
+            }
+
+            SettingsRow(
+                label: "Safety stop",
+                description: "A forgotten hands-free recording stops itself after this."
+            ) {
+                StepperSlider(
+                    value: Binding(
+                        get: { Double(store.settings.latch.maxSeconds) },
+                        set: { store.settings.latch.maxSeconds = Int($0) }
+                    ),
+                    range: 30...900,
+                    step: 30,
+                    format: { $0 < 60 ? "\(Int($0))s" : "\(Int($0) / 60) min" }
+                )
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .onHover { hovering = $0 }
-        .accessibilityLabel(hotkey.displayName)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .disabled(!latchEnabled)
+        .opacity(latchEnabled ? 1 : 0.55)
     }
 }

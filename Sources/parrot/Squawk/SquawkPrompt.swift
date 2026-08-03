@@ -10,8 +10,9 @@ import Foundation
 ///    into a text field so it had better be only the text.
 /// 2. **About you** — who is speaking, how they sign off, how they write.
 ///    Applies to every squawk in every app.
-/// 3. **The app profile** — how this particular app should be written for.
-///    Mail gets sentences and a sign-off; Messages gets one lowercase line.
+/// 3. **The style category** — the tone, the length and the notes for this kind
+///    of writing. Mail gets sentences and a sign-off; Messages gets one
+///    lowercase line.
 ///
 /// Only the instruction is an instruction. Everything read off the screen is
 /// tagged data, and the base prompt says so — an email that reads "ignore your
@@ -88,7 +89,7 @@ enum SquawkPrompt {
     /// the last thing in the turn is an English sentence and the reply comes
     /// back in English.
     ///
-    /// Last, so it wins on recency, and phrased so a profile that genuinely
+    /// Last, so it wins on recency, and phrased so a category that genuinely
     /// wants another language can still say so.
     static func languageRule(languages: [String]) -> String {
         var rule = """
@@ -110,24 +111,41 @@ enum SquawkPrompt {
         return rule
     }
 
-    /// The system prompt: rules, then the user's own standing instructions,
-    /// then the language rule.
+    /// The system prompt: rules, then who you are, then the category's tone and
+    /// length, then its notes, then the language rule.
+    ///
+    /// Ordered least specific to most, so the category's notes can overrule its
+    /// tone and the instruction can overrule everything — a Slack category that
+    /// says "lowercase, no punctuation" should win over its own formal tone,
+    /// because whoever wrote the note was being more specific than whoever
+    /// picked the tone. Recency is what makes that happen, so the order is the
+    /// mechanism, not a formatting choice.
     static func system(
         settings: SquawkSettings,
-        profile: AppProfile?,
+        style: StyleSettings,
+        category: StyleCategory,
         languages: [String] = []
     ) -> String {
         var prompt = settings.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if prompt.isEmpty { prompt = base }
 
-        let about = settings.about.trimmingCharacters(in: .whitespacesAndNewlines)
+        let about = style.about.trimmingCharacters(in: .whitespacesAndNewlines)
         if !about.isEmpty {
             prompt += "\n\nAbout the person you are writing as:\n\(about)"
         }
 
-        if let profile, !profile.instructions.trimmingCharacters(in: .whitespaces).isEmpty {
-            prompt += "\n\nThis is \(profile.name). Write for it like this:\n"
-                + profile.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        let voice = [category.tone.squawkRule, category.length.squawkRule].compactMap { $0 }
+        if !voice.isEmpty {
+            prompt += "\n\n" + voice.joined(separator: "\n")
+        }
+
+        if !category.trimmedInstructions.isEmpty {
+            if let name = category.promptName {
+                prompt += "\n\nThis is \(name). Write for it like this:\n"
+                    + category.trimmedInstructions
+            } else {
+                prompt += "\n\nWrite it like this:\n" + category.trimmedInstructions
+            }
         }
 
         prompt += "\n\n" + languageRule(languages: languages)

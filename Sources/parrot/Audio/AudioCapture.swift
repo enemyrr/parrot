@@ -43,6 +43,11 @@ final class AudioCapture {
     /// Invoked on an arbitrary thread; hop to main if you touch UI.
     var onLevel: ((Float) -> Void)?
 
+    /// CoreAudio UID of the microphone to record from. Empty or nil means the
+    /// system default. Read at `start()`, so changing it takes effect on the
+    /// next recording rather than mid-utterance.
+    var preferredDeviceUID: String?
+
     /// Snapshot of what's accumulated so far, without ending the recording.
     /// Exists for tests; `stop()` is what callers want.
     var captured: [Float] {
@@ -56,6 +61,10 @@ final class AudioCapture {
         guard !isRecording else { return }
 
         let input = engine.inputNode
+        // Before the format is read: switching device changes the node's sample
+        // rate and channel count, and a tap installed with the old format would
+        // be rejected the moment the engine starts.
+        selectDevice(on: input)
         let inputFormat = input.outputFormat(forBus: 0)
         let targetFormat = Self.targetFormat
         let converter = try cachedConverter(for: inputFormat)
@@ -79,6 +88,26 @@ final class AudioCapture {
         }
 
         isRecording = true
+    }
+
+    /// Point the engine's input at the chosen microphone.
+    ///
+    /// Resolved on every start rather than cached: the device may have been
+    /// unplugged since it was picked, and falling back to the system default is
+    /// a far better answer than refusing to record. Never fatal for the same
+    /// reason — a device that won't take is worth a line in the log, not a lost
+    /// dictation.
+    private func selectDevice(on input: AVAudioInputNode) {
+        let uid = preferredDeviceUID ?? ""
+        let target = AudioDevices.device(uid: uid) ?? AudioDevices.systemDefaultInput()
+        guard let target, input.auAudioUnit.deviceID != target.deviceID else { return }
+        do {
+            try input.auAudioUnit.setDeviceID(target.deviceID)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "could not record from \(target.name): \(error)\n".utf8
+            ))
+        }
     }
 
     private func cachedConverter(for inputFormat: AVAudioFormat) throws -> AVAudioConverter {

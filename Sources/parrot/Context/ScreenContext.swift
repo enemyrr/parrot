@@ -140,17 +140,77 @@ enum ScreenReader {
         )
     }
 
-    /// Apps whose windows are never read, whatever the settings say. A password
-    /// manager's window is a list of passwords; there is no prompt worth the
-    /// risk of shipping one to a model.
-    static let excludedNameFragments = [
-        "1password", "bitwarden", "lastpass", "dashlane", "keepass",
-        "keychain access", "loginwindow", "parrot",
+    /// An app whose windows are never read, whatever the settings say. A
+    /// password manager's window is a list of passwords; there is no prompt
+    /// worth the risk of shipping one to a model.
+    struct AlwaysExcluded: Identifiable, Equatable {
+        /// What settings calls it. `com.agilebits.onepassword7` is not an
+        /// answer to "which apps are excluded".
+        let name: String
+        /// Matched against the app's own name, lowercased, by substring. Catches
+        /// versions and forks whose bundle id we've never seen.
+        let fragment: String
+        /// Every id the app has shipped under, matched exactly. An id survives a
+        /// rename and a localised name, which the fragment does not.
+        let bundleIDs: [String]
+
+        var id: String { name }
+    }
+
+    static let alwaysExcluded: [AlwaysExcluded] = [
+        AlwaysExcluded(
+            name: "1Password",
+            fragment: "1password",
+            bundleIDs: [
+                "com.1password.1password", "com.agilebits.onepassword7",
+                "com.agilebits.onepassword",
+            ]
+        ),
+        AlwaysExcluded(
+            name: "Bitwarden",
+            fragment: "bitwarden",
+            bundleIDs: ["com.bitwarden.desktop"]
+        ),
+        AlwaysExcluded(
+            name: "LastPass",
+            fragment: "lastpass",
+            bundleIDs: ["com.lastpass.LastPass", "com.lastpass.lastpassmacdesktop"]
+        ),
+        AlwaysExcluded(
+            name: "Dashlane",
+            fragment: "dashlane",
+            bundleIDs: ["com.dashlane.Dashlane", "com.dashlane.dashlanephoenix"]
+        ),
+        AlwaysExcluded(
+            name: "KeePass",
+            fragment: "keepass",
+            bundleIDs: ["org.keepassxc.keepassxc", "com.kyleduo.KeePassium"]
+        ),
+        AlwaysExcluded(
+            name: "Keychain Access",
+            fragment: "keychain access",
+            bundleIDs: ["com.apple.keychainaccess"]
+        ),
+        AlwaysExcluded(
+            name: "Login window",
+            fragment: "loginwindow",
+            bundleIDs: ["com.apple.loginwindow"]
+        ),
+        AlwaysExcluded(
+            name: "Parrot",
+            fragment: "parrot",
+            bundleIDs: ["com.digimata.parrot"]
+        ),
     ]
 
     static func isExcluded(_ target: AppTarget) -> Bool {
         let name = target.name.lowercased()
-        return excludedNameFragments.contains { name.contains($0) }
+        let bundleID = target.bundleID?.lowercased()
+        return alwaysExcluded.contains { entry in
+            if name.contains(entry.fragment) { return true }
+            guard let bundleID else { return false }
+            return entry.bundleIDs.contains { $0.lowercased() == bundleID }
+        }
     }
 
     // MARK: - Capture
@@ -507,6 +567,16 @@ enum ScreenReader {
     /// Testing seam — `parrot context` has to be able to ask twice in a row.
     static func forgetChromiumState(pid: pid_t) {
         ChromiumAccessibility.forget(pid: pid)
+    }
+
+    /// The same poke, for `RosterReader`.
+    ///
+    /// It walks the same Electron apps for a different reason and needs the tree
+    /// switched on exactly as much — and needs it to go through the same
+    /// once-per-app-per-window-of-time gate, so a squawk and a roster read in the
+    /// same minute poke Chromium once between them rather than twice.
+    static func enableChromium(app: AXUIElement, pid: pid_t, focusIsEditable: Bool) -> Bool {
+        ChromiumAccessibility.enable(app: app, pid: pid, focusIsEditable: focusIsEditable)
     }
 
     // MARK: - Diagnostics

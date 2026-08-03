@@ -2,15 +2,16 @@ import SwiftUI
 
 /// The sections in the sidebar, in order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general
-    case keys
+    case home
     case squawk
     case models
     case cleanup
+    case style
     case dictionary
-    case appearance
+    case integrations
     case accounts
     case history
+    case usage
     case permissions
     case about
 
@@ -18,15 +19,16 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general: return "General"
-        case .keys: return "Keys"
+        case .home: return "Home"
         case .squawk: return "Squawk"
         case .models: return "Models"
         case .cleanup: return "Cleanup"
+        case .style: return "Style"
         case .dictionary: return "Dictionary"
-        case .appearance: return "Appearance"
+        case .integrations: return "Integrations"
         case .accounts: return "Accounts"
         case .history: return "History"
+        case .usage: return "Usage"
         case .permissions: return "Permissions"
         case .about: return "About"
         }
@@ -34,42 +36,37 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .general: return "slider.horizontal.3"
-        case .keys: return "keyboard"
+        case .home: return "house"
         case .squawk: return "sparkles"
         case .models: return "waveform"
         case .cleanup: return "wand.and.stars"
+        case .style: return "person.wave.2"
         case .dictionary: return "character.book.closed"
-        case .appearance: return "paintbrush"
+        case .integrations: return "square.on.square.dashed"
         case .accounts: return "key"
         case .history: return "clock.arrow.circlepath"
+        case .usage: return "chart.bar"
         case .permissions: return "lock.shield"
         case .about: return "bird"
         }
     }
 
-    /// Sidebar grouping. Setup lives apart from preferences because it is
-    /// something you finish, not something you tune.
-    enum Group: String, CaseIterable, Identifiable {
-        case dictation = "Dictation"
-        case system = "System"
-
-        var id: String { rawValue }
+    /// About is reachable from the parrot glyph under the sidebar, and
+    /// Permissions and Accounts are sheets on it — none is a row of its own,
+    /// because none is somewhere you navigate to while tuning.
+    static var visible: [SettingsPane] {
+        allCases.filter { !$0.isHidden }
     }
 
-    var group: Group {
+    /// Still cases, because `parrot settings <name>` and the menu bar name
+    /// them — permissions and accounts land on About with their sheet up, and
+    /// history, models and usage land on Home, where the transcripts, the model
+    /// row and the totals live now.
+    var isHidden: Bool {
         switch self {
-        case .general, .keys, .squawk, .models, .cleanup, .dictionary, .appearance:
-            return .dictation
-        // Accounts sits with the system settings, not with Dictation: it is
-        // setup you finish once, not a dial you turn while tuning how parrot
-        // types.
-        case .accounts, .history, .permissions, .about: return .system
+        case .about, .permissions, .accounts, .history, .models, .usage: return true
+        default: return false
         }
-    }
-
-    static func panes(in group: Group) -> [SettingsPane] {
-        allCases.filter { $0.group == group }
     }
 }
 
@@ -109,7 +106,40 @@ struct SettingsRootView: View {
     @ObservedObject var store: SettingsStore
     @ObservedObject var catalog: ModelCatalog
     @ObservedObject var context: SettingsContext
-    @State var pane: SettingsPane
+    @State private var pane: SettingsPane
+    /// One-shot: the pane clears it once it has opened the sheet. A constant
+    /// would re-open the sheet every time that pane is navigated back to, since
+    /// leaving it discards the @State that tracks it.
+    @State private var openAboutDialog: AboutPane.Dialog?
+    @State private var openModels: Bool
+
+    init(
+        store: SettingsStore,
+        catalog: ModelCatalog,
+        context: SettingsContext,
+        pane: SettingsPane
+    ) {
+        self.store = store
+        self.catalog = catalog
+        self.context = context
+        // Permissions and Accounts are sheets on About now, so a request for
+        // either selects About and opens the sheet rather than showing a pane
+        // with no row. History, Models and Usage live on Home, so a request for
+        // any of them lands there.
+        let landing: SettingsPane = switch pane {
+        case .permissions, .accounts: .about
+        case .history, .models, .usage: .home
+        default: pane
+        }
+        let aboutDialog: AboutPane.Dialog? = switch pane {
+        case .permissions: .permissions
+        case .accounts: .accounts
+        default: nil
+        }
+        _pane = State(initialValue: landing)
+        _openAboutDialog = State(initialValue: aboutDialog)
+        _openModels = State(initialValue: pane == .models)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -124,46 +154,39 @@ struct SettingsRootView: View {
 
     private var sidebar: some View {
         List(selection: $pane) {
-            ForEach(SettingsPane.Group.allCases) { group in
-                Section(group.rawValue) {
-                    ForEach(SettingsPane.panes(in: group)) { item in
-                        Label(item.title, systemImage: item.symbol)
-                            .tag(item)
-                    }
-                }
+            ForEach(SettingsPane.visible) { item in
+                Label(item.title, systemImage: item.symbol)
+                    .tag(item)
             }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            EngineStatusBar(status: context.engineStatus)
+            EngineStatusBar(status: context.engineStatus) { pane = .about }
         }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch pane {
-        case .general:
-            GeneralPane(store: store)
-        case .keys:
-            KeysPane(store: store)
+        case .home, .history, .models, .usage:
+            HomePane(
+                store: store,
+                catalog: catalog,
+                context: context,
+                openModels: $openModels
+            )
         case .squawk:
             SquawkPane(store: store)
-        case .models:
-            ModelsPane(store: store, catalog: catalog, context: context)
         case .cleanup:
             CleanupPane(store: store)
+        case .style:
+            StylePane(store: store)
         case .dictionary:
             DictionaryPane(store: store)
-        case .appearance:
-            AppearancePane(store: store, context: context)
-        case .accounts:
-            AccountsPane(store: store)
-        case .history:
-            HistoryPane(store: store)
-        case .permissions:
-            PermissionsPane(store: store)
-        case .about:
-            AboutPane()
+        case .integrations:
+            IntegrationsPane(store: store)
+        case .permissions, .accounts, .about:
+            AboutPane(store: store, openDialog: $openAboutDialog)
         }
     }
 }
@@ -173,6 +196,7 @@ struct SettingsRootView: View {
 /// on the thing the settings configure.
 private struct EngineStatusBar: View {
     let status: SettingsContext.EngineStatus
+    let onAbout: () -> Void
 
     var body: some View {
         HStack(spacing: 7) {
@@ -182,13 +206,30 @@ private struct EngineStatusBar: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
+            aboutButton
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial)
-        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var aboutButton: some View {
+        Button(action: onAbout) {
+            Group {
+                if let glyph = ParrotGlyph.image(size: 15) {
+                    Image(nsImage: glyph)
+                } else {
+                    Image(systemName: "bird")
+                }
+            }
+            .foregroundStyle(.secondary)
+            .frame(width: 20, height: 20)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("About parrot")
+        .accessibilityLabel("About parrot")
     }
 
     @ViewBuilder
@@ -212,7 +253,7 @@ private struct EngineStatusBar: View {
         switch status {
         case .notRunning: return "Not running"
         case .loading(let what): return what
-        case .ready(let model): return "Ready · \(model)"
+        case .ready: return "Ready"
         case .failed(let why): return why
         }
     }

@@ -33,16 +33,16 @@ struct ShortcutRecorder: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        RoundedRectangle(cornerRadius: SettingsMetrics.panelCornerRadius, style: .continuous)
                             .fill(recording
                                 ? Color.accentColor.opacity(0.16)
                                 : SettingsPalette.keycapFill)
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        RoundedRectangle(cornerRadius: SettingsMetrics.panelCornerRadius, style: .continuous)
                             .strokeBorder(
                                 recording ? Color.accentColor : SettingsPalette.keycapBorder,
-                                lineWidth: recording ? 1.5 : 0.5
+                                lineWidth: 1
                             )
                     )
             }

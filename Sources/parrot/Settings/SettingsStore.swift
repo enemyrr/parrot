@@ -20,6 +20,7 @@ final class SettingsStore: ObservableObject {
     // thread-safe on its own.
     nonisolated static let suiteName = "com.digimata.parrot"
     nonisolated private static let key = "settings"
+    nonisolated private static let onboardingKey = "onboarding.completed"
 
     /// Called after every persisted change with (old, new). The daemon uses it
     /// to reconfigure only the parts that actually differ.
@@ -103,5 +104,33 @@ final class SettingsStore: ObservableObject {
     /// True once anything has been written — i.e. this isn't a first run.
     nonisolated static var hasStoredSettings: Bool {
         defaults.data(forKey: key) != nil
+    }
+
+    /// Whether the guided setup has been through. Its own key rather than a
+    /// field on `Settings`: it records what parrot has shown, not something the
+    /// user configures, and it has no business sitting next to the hotkey.
+    ///
+    /// Not derived from `hasStoredSettings` either — the settings blob is
+    /// written the moment anything touches a default, including the setup
+    /// window itself.
+    nonisolated static var hasCompletedOnboarding: Bool {
+        get { defaults.bool(forKey: onboardingKey) }
+        set { defaults.set(newValue, forKey: onboardingKey) }
+    }
+
+    /// Answer the flag once for an install that predates it.
+    ///
+    /// The key is new, so it reads false for everyone — including a user who
+    /// has been running parrot for months and would otherwise be handed a
+    /// first-run wizard, activated over whatever they were doing, with every
+    /// check already green. Anyone with a stored blob has been through setup by
+    /// definition, so record that instead of showing it to them.
+    ///
+    /// Must run before anything writes settings this launch, which is why the
+    /// daemon calls it first thing: `hasStoredSettings` is only evidence of an
+    /// older install for as long as this launch hasn't persisted anything.
+    nonisolated static func seedOnboardingForExistingInstall() {
+        guard defaults.object(forKey: onboardingKey) == nil else { return }
+        if hasStoredSettings { hasCompletedOnboarding = true }
     }
 }

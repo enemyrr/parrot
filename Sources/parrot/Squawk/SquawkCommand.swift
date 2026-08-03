@@ -38,7 +38,10 @@ struct SquawkCommand: ParsableCommand {
     var delay: Double = 0
 
     func run() throws {
-        var settings = SettingsStore.current().squawk
+        // One snapshot for the whole run: squawk settings, style and languages
+        // have to describe the same moment, and each read re-decodes the blob.
+        let stored = SettingsStore.current()
+        var settings = stored.squawk
         if let provider {
             guard let parsed = LLMProvider(rawValue: provider) else {
                 throw ValidationError("Unknown provider '\(provider)'. Use apple, anthropic or openai.")
@@ -61,11 +64,13 @@ struct SquawkCommand: ParsableCommand {
                 : ScreenReader.capture(target, limits: settings.context.limits)
         }
 
-        let profile = settings.profile(for: context?.bundleID)
+        let style = stored.style
+        let category = style.category(for: context?.bundleID)
         let system = SquawkPrompt.system(
             settings: settings,
-            profile: profile,
-            languages: LanguageSelection.displayNames(SettingsStore.current().languages)
+            style: style,
+            category: category,
+            languages: LanguageSelection.displayNames(stored.languages)
         )
         let user = SquawkPrompt.user(instruction: instruction, context: context)
 
@@ -92,7 +97,7 @@ struct SquawkCommand: ParsableCommand {
         let fallback: SquawkResponse.Action =
             (context?.selection?.isEmpty == false) ? .replace : .insert
 
-        print("app      \(context?.app ?? "—")\(profile.map { "  ·  profile: \($0.name)" } ?? "")")
+        print("app      \(context?.app ?? "—")  ·  style: \(category.name)")
         print("context  \(context?.characterCount ?? 0) chars")
         print("model    \(client.name)")
         print("")

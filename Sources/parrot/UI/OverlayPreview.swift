@@ -14,8 +14,8 @@ struct OverlayPreview: ParsableCommand {
         abstract: "Preview the recording overlay against your live microphone.",
         discussion: """
             Press 1/2 to switch mode (dictate / squawk), +/- to trim \
-            sensitivity, l to toggle the hands-free lock, t to preview the \
-            transcribing spinner, q to quit.
+            sensitivity, l to toggle the hands-free lock, t and m to preview \
+            the two waits (transcribing, then the model thinking), q to quit.
             """
     )
 
@@ -31,12 +31,14 @@ struct OverlayPreview: ParsableCommand {
         }
         // Start from the user's own settings unless overridden, so what you see
         // here is what the daemon will actually do.
-        let startSensitivity = sensitivity ?? SettingsStore.current().overlay.sensitivity
+        let stored = SettingsStore.current()
+        let startSensitivity = sensitivity ?? stored.overlay.sensitivity
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
         let capture = AudioCapture()
+        capture.preferredDeviceUID = stored.audio.inputDeviceUID
         let overlay = MainActor.assumeIsolated {
             RecordingOverlay(sensitivity: startSensitivity)
         }
@@ -65,6 +67,13 @@ struct OverlayPreview: ParsableCommand {
                 case "l": state = .latched; overlay.show(state, mode: mode); print("→ latched")
                 case "r": state = .recording; overlay.show(state, mode: mode); print("→ recording")
                 case "t": state = .transcribing; overlay.show(state, mode: mode); print("→ transcribing")
+                case "m":
+                    // Squawk-only in the daemon, so force the mode too —
+                    // there's nothing to see here on a dictate pill.
+                    mode = .squawk
+                    state = .thinking
+                    overlay.show(state, mode: mode)
+                    print("→ thinking")
                 case "d":
                     Self.toggleReadout(overlay)
                 case "+", "=", "-", "_":
@@ -118,7 +127,7 @@ struct OverlayPreview: ParsableCommand {
         Listening — talk at it. Mode '\(mode.rawValue)', \
         sensitivity \(String(format: "%.2f", sensitivity)).
           1 dictate   2 squawk
-          r recording   l latched   t transcribing
+          r recording   l latched   t transcribing   m thinking (squawk)
           + / -  sensitivity (higher picks up quieter speech)
           d live level readout
           q quit

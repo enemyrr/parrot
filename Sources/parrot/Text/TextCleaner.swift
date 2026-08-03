@@ -7,6 +7,23 @@ struct CleanupContext {
     let vocabulary: [String]
     /// Languages the speaker actually uses, as display names.
     let languages: [String]
+    /// The kind of writing this is, which carries the tone and the notes for
+    /// it. Nil means neither — a `parrot clean` at the command line, where
+    /// there is no app to be writing into.
+    ///
+    /// Only the punctuation half of it reaches the prompt: see
+    /// `Tone.cleanupRule` and the fence at the end of `instructions`.
+    let category: StyleCategory?
+
+    init(
+        vocabulary: [String],
+        languages: [String],
+        category: StyleCategory? = nil
+    ) {
+        self.vocabulary = vocabulary
+        self.languages = languages
+        self.category = category
+    }
 
     static let empty = CleanupContext(vocabulary: [], languages: [])
 }
@@ -62,6 +79,30 @@ enum CleanupPrompt {
         if !context.vocabulary.isEmpty {
             prompt += "\nPreserve these terms exactly as written: "
                 + context.vocabulary.joined(separator: ", ") + "."
+        }
+        // Tone and app formatting go last, after any custom prompt, so someone
+        // who replaced the base prompt still gets the knobs the Style pane
+        // says they have. Both are re-fenced by the rule below: cleanup may
+        // change how the text is punctuated, never what it says.
+        var styled = false
+        if let tone = context.category?.tone.cleanupRule {
+            prompt += "\n" + tone
+            styled = true
+        }
+        if let category = context.category, !category.trimmedInstructions.isEmpty {
+            // The catch-all is named for the settings window, not for a model:
+            // "this is Other" is worse than saying nothing about what it is.
+            if let name = category.promptName {
+                prompt += "\nThis is \(name). Format it like this: "
+                    + category.trimmedInstructions
+            } else {
+                prompt += "\nFormat it like this: \(category.trimmedInstructions)"
+            }
+            styled = true
+        }
+        if styled {
+            prompt += "\nNone of that licenses rewriting: keep the speaker's words and "
+                + "their order, and change only punctuation, capitalization and line breaks."
         }
         return prompt
     }

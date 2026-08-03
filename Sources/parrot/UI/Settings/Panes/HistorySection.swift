@@ -1,28 +1,37 @@
 import AppKit
 import SwiftUI
 
-/// What parrot keeps: the transcripts themselves, and the counts derived from
-/// them. Two separate switches because they are two separate promises — stats
-/// hold no text, so they can stay on with history off.
-struct HistoryPane: View {
+/// The transcripts, on the Home page. A section rather than a pane: "what did
+/// I just dictate?" is the question the window gets opened for, so the answer
+/// shouldn't be a sidebar click away.
+///
+/// The list is the whole surface. Sorting and deleting hide behind the
+/// ellipsis, searching appears only once there is enough to search, and the
+/// switches that govern storage live under Advanced — none of them are why
+/// anyone scrolls down here.
+struct HistorySection: View {
     @ObservedObject var store: SettingsStore
-    @StateObject private var data = HistoryPaneData()
+    @StateObject private var data = HistoryData()
 
     @State private var confirmingClearHistory = false
-    @State private var confirmingResetStats = false
 
     var body: some View {
-        SettingsPage(
-            title: "History",
-            subtitle: "Everything here stays on this Mac, in plain files you can read."
-        ) {
-            historyCard
+        VStack(alignment: .leading, spacing: SettingsMetrics.labelSpacing) {
+            header
+
             if store.settings.history.enabled {
-                recentCard
+                listCard
+                footer
+            } else {
+                offCard
             }
-            statsCard
         }
         .onAppear { data.reload(settings: store.settings) }
+        // Turning history on above (or under Advanced) has to bring the list
+        // to life without a pane switch in between.
+        .onChange(of: store.settings.history.enabled) { _, _ in
+            data.reload(settings: store.settings)
+        }
         .confirmationDialog(
             "Delete every transcript?",
             isPresented: $confirmingClearHistory
@@ -34,77 +43,70 @@ struct HistoryPane: View {
             Text("\(ParrotPaths.historyFile.path) will be emptied. This can't be undone. "
                 + "Usage totals are kept in a separate file and aren't affected.")
         }
-        .confirmationDialog(
-            "Reset usage totals?",
-            isPresented: $confirmingResetStats
-        ) {
-            Button("Reset", role: .destructive) {
-                data.resetStats(settings: store.settings)
-            }
-        } message: {
-            Text("Your lifetime word count and time saved go back to zero.")
-        }
     }
 
-    // MARK: - History
+    // MARK: - Header
 
-    private var historyCard: some View {
-        SettingsCard(
-            header: "Transcripts",
-            footer: "Stored as JSON lines at \(ParrotPaths.historyFile.path)."
-        ) {
-            SettingsRow(
-                label: "Keep a history",
-                description: "Every transcript, with the raw text before cleanup."
-            ) {
-                Toggle("", isOn: $store.settings.history.enabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-
+    /// The same label every other group on the page wears, with its controls
+    /// parked at the end. It used to be 13pt semibold sentence case, which made
+    /// the one section anybody scrolls to the one that didn't look like the
+    /// others.
+    private var header: some View {
+        SettingsGroupLabel(title: "History") {
+            // Menu first, search after — the reading order of the screenshot
+            // this layout follows, and it keeps the field against the card edge.
             if store.settings.history.enabled {
-                SettingsRow(
-                    label: "Keep at most",
-                    description: "Older entries are pruned at startup."
-                ) {
-                    StepperSlider(
-                        value: Binding(
-                            get: { Double(store.settings.history.maxEntries) },
-                            set: { store.settings.history.maxEntries = Int($0) }
-                        ),
-                        range: 100...20000,
-                        step: 100,
-                        format: { "\(Int($0).formatted())" }
-                    )
-                }
+                menu
             }
 
-            SettingsRow(label: "Stored file", description: data.historySummary, wideControl: true) {
-                HStack(spacing: 8) {
-                    Button("Reveal") {
-                        NSWorkspace.shared.selectFile(
-                            ParrotPaths.historyFile.path,
-                            inFileViewerRootedAtPath: ParrotPaths.dataDirectory.path
-                        )
-                    }
-                    Button("Clear…") { confirmingClearHistory = true }
-                        .disabled(data.totalEntries == 0)
-                }
+            if store.settings.history.enabled, data.totalEntries > HistoryData.searchThreshold {
+                SearchField(text: $data.query, placeholder: "Search transcripts")
+                    .frame(width: 200)
             }
         }
     }
 
-    private var recentCard: some View {
-        SettingsCard(header: "Recent", footer: recentFooter) {
-            if data.totalEntries > HistoryPaneData.searchThreshold {
-                SettingsCustomRow(verticalPadding: 8) {
-                    SearchField(text: $data.query, placeholder: "Search transcripts")
-                }
+    private var menu: some View {
+        Menu {
+            Picker("Sort", selection: $data.newestFirst) {
+                Text("Latest first").tag(true)
+                Text("Earliest first").tag(false)
             }
+            .pickerStyle(.inline)
 
+            Divider()
+
+            Button("Delete all…", role: .destructive) {
+                confirmingClearHistory = true
+            }
+            .disabled(data.totalEntries == 0)
+        } label: {
+            // A bare glyph on its own glass disc, sized to sit flush with the
+            // search capsule beside it. `ellipsis.circle` would draw a ring
+            // inside the disc — a circle in a circle.
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .glassChip(in: Circle(), interactive: true)
+                .contentShape(Circle())
+        }
+        // Plain, not borderless-button: that style paints its own bezel on
+        // hover, which lands on top of the glass disc.
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sort and manage history")
+        .accessibilityLabel("History options")
+    }
+
+    // MARK: - List
+
+    private var listCard: some View {
+        SettingsCard {
             if data.items.isEmpty {
                 SettingsCustomRow(verticalPadding: 18) {
-                    Text(data.query.isEmpty ? "Nothing dictated yet." : "No transcripts match “\(data.query)”.")
+                    Text(emptyMessage)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -131,88 +133,35 @@ struct HistoryPane: View {
         }
     }
 
-    private var recentFooter: String? {
-        guard data.totalEntries > 0 else { return nil }
-        let shown = "Showing \(data.shownCount) of \(data.matchCount.formatted())"
-        return data.query.isEmpty
-            ? "\(shown). Click a transcript to expand it."
-            : "\(shown) matching. Click a transcript to expand it."
+    private var emptyMessage: String {
+        data.query.isEmpty
+            ? "Nothing dictated yet. Hold the key and talk."
+            : "No transcripts match “\(data.query)”."
     }
 
-    // MARK: - Stats
+    @ViewBuilder
+    private var footer: some View {
+        if data.totalEntries > 0 {
+            let shown = "Showing \(data.shownCount) of \(data.matchCount.formatted())"
+            SettingsGroupFooter(text: data.query.isEmpty
+                ? "\(shown). Click a transcript to expand it. Everything stays on this Mac."
+                : "\(shown) matching. Click a transcript to expand it.")
+        }
+    }
 
-    private var statsCard: some View {
-        SettingsCard(
-            header: "Usage",
-            footer: "Counts only — never the text you dictated. Kept in its own file, "
-                + "so clearing history doesn't reset them."
-        ) {
-            SettingsRow(label: "Count what I dictate", description: nil) {
-                Toggle("", isOn: $store.settings.stats.enabled)
+    /// History off isn't an error, but the section can't silently vanish
+    /// either — that reads as a bug to anyone who remembers it being here.
+    private var offCard: some View {
+        SettingsCard {
+            SettingsRow(
+                label: "History is off",
+                description: "Transcripts aren't being kept. Turn it on to see them here."
+            ) {
+                Toggle("", isOn: $store.settings.history.enabled)
                     .labelsHidden()
                     .toggleStyle(.switch)
             }
-
-            if store.settings.stats.enabled {
-                SettingsRow(
-                    label: "Compare against typing at",
-                    description: "Used only to work out “time saved”. 40 wpm is "
-                        + "composing-original-text speed, well below a typing test."
-                ) {
-                    StepperSlider(
-                        value: Binding(
-                            get: { store.settings.stats.typingWpm },
-                            set: { store.settings.stats.typingWpm = StatsSettings.clampWpm($0) }
-                        ),
-                        range: 10...200,
-                        step: 5,
-                        format: { "\(Int($0)) wpm" }
-                    )
-                }
-
-                if let summary = data.summary, summary.sessions > 0 {
-                    SettingsCustomRow(verticalPadding: 14) {
-                        HStack(spacing: 0) {
-                            StatTile(value: summary.words.formatted(), label: "words")
-                            StatTile(
-                                value: Stats.duration(summary.secondsSaved),
-                                label: "saved"
-                            )
-                            StatTile(
-                                value: "\(Int(summary.averageWpm.rounded()))",
-                                label: "wpm speaking"
-                            )
-                            StatTile(
-                                value: summary.sessions.formatted(),
-                                label: summary.sessions == 1 ? "recording" : "recordings"
-                            )
-                        }
-                    }
-                }
-
-                SettingsRow(label: "Totals", description: data.statsSummary, wideControl: true) {
-                    Button("Reset…") { confirmingResetStats = true }
-                        .disabled((data.summary?.sessions ?? 0) == 0)
-                }
-            }
         }
-    }
-}
-
-private struct StatTile: View {
-    let value: String
-    let label: String
-
-    var body: some View {
-        VStack(spacing: 3) {
-            Text(value)
-                .font(.system(size: 19, weight: .medium, design: .rounded))
-                .monospacedDigit()
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -243,7 +192,7 @@ private struct DayHeaderRow: View {
 ///
 /// The old single-line version spent a third of its width on a timestamp column
 /// and an icon column, leaving the text — the only reason anyone opens this
-/// pane — clipped in the middle. Now the text gets the full width and the
+/// list — clipped in the middle. Now the text gets the full width and the
 /// details sit under it in a quieter register.
 private struct TranscriptRow: View {
     let entry: TranscriptEntry
@@ -398,38 +347,38 @@ private struct SearchField: View {
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(SettingsPalette.chipFill)
-        )
+        .glassChip(in: Capsule(style: .continuous))
     }
 }
 
-/// One line in the Recent list: either a transcript or the day heading above a
-/// run of them. Flattened into a single array so the card's divider logic sees
-/// them as ordinary sibling rows.
+/// One line in the list: either a transcript or the day heading above a run of
+/// them. Flattened into a single array so the card's divider logic sees them
+/// as ordinary sibling rows.
 private struct HistoryItem: Identifiable {
     enum Kind {
         case day(String)
         case entry(TranscriptEntry)
     }
 
-    let id: Int
+    /// Derived from content, not position. Searching and flipping the sort
+    /// rebuild this list with the same rows in different places; a positional
+    /// id would hand a row's expanded state to whatever transcript landed
+    /// there instead.
+    let id: String
     let kind: Kind
 }
 
-/// Reads the two on-disk stores for the pane. Kept out of the view so opening
-/// the window doesn't re-read the files on every redraw.
+/// Reads the on-disk store for the section. Kept out of the view so opening
+/// the window doesn't re-read the file on every redraw.
 @MainActor
-private final class HistoryPaneData: ObservableObject {
+private final class HistoryData: ObservableObject {
     static let pageSize = 12
     /// Below this, a search field is more chrome than help — the whole list is
     /// already on screen.
     static let searchThreshold = 8
 
-    @Published private(set) var summary: StatsSummary?
     @Published private(set) var totalEntries = 0
     @Published private(set) var items: [HistoryItem] = []
     @Published private(set) var matchCount = 0
@@ -440,6 +389,16 @@ private final class HistoryPaneData: ObservableObject {
     @Published var query = "" {
         didSet {
             guard query != oldValue else { return }
+            visible = Self.pageSize
+            rebuild()
+        }
+    }
+
+    /// Flipping the sort keeps the query but starts paging over again — the
+    /// first page of the other end, not page four of it.
+    @Published var newestFirst = true {
+        didSet {
+            guard newestFirst != oldValue else { return }
             visible = Self.pageSize
             rebuild()
         }
@@ -457,13 +416,17 @@ private final class HistoryPaneData: ObservableObject {
         // `all()` is already newest first — take from the front, don't re-sort.
         entries = store.all()
         totalEntries = entries.count
-        summary = StatsStore(settings: settings.stats).summary(typingWpm: settings.stats.typingWpm)
         rebuild()
     }
 
     func showMore() {
         visible += Self.pageSize * 2
         rebuild()
+    }
+
+    func clearHistory(settings: Settings) {
+        try? TranscriptStore(settings: settings.history).clear()
+        reload(settings: settings)
     }
 
     // MARK: - Private
@@ -475,6 +438,7 @@ private final class HistoryPaneData: ObservableObject {
             : entries.filter {
                 $0.text.lowercased().contains(needle) || $0.raw.lowercased().contains(needle)
             }
+        if !newestFirst { matches.reverse() }
         matchCount = matches.count
 
         let shown = matches.prefix(visible)
@@ -483,16 +447,20 @@ private final class HistoryPaneData: ObservableObject {
 
         // Headings come from walking the (already sorted) list and noticing the
         // label change, rather than a Dictionary group — that would lose the
-        // newest-first order the whole pane depends on.
+        // order the whole section depends on.
         var built: [HistoryItem] = []
         var currentDay: String?
         for entry in shown {
             let label = Self.dayLabel(entry.at)
             if label != currentDay {
-                built.append(HistoryItem(id: built.count, kind: .day(label)))
+                built.append(HistoryItem(id: "day-\(label)", kind: .day(label)))
                 currentDay = label
             }
-            built.append(HistoryItem(id: built.count, kind: .entry(entry)))
+            // `at` is stamped by Date() per transcript, so it identifies one.
+            built.append(HistoryItem(
+                id: "entry-\(entry.at.timeIntervalSince1970)",
+                kind: .entry(entry)
+            ))
         }
         items = built
     }
@@ -510,27 +478,5 @@ private final class HistoryPaneData: ObservableObject {
             return date.formatted(.dateTime.weekday(.wide))
         }
         return date.formatted(.dateTime.day().month(.abbreviated).year())
-    }
-
-    var historySummary: String {
-        totalEntries == 0
-            ? "Empty"
-            : "\(totalEntries.formatted()) \(totalEntries == 1 ? "transcript" : "transcripts")"
-    }
-
-    var statsSummary: String {
-        guard let summary, summary.sessions > 0 else { return "Nothing counted yet" }
-        let days = summary.daysUsed
-        return "Across \(days) \(days == 1 ? "day" : "days")"
-    }
-
-    func clearHistory(settings: Settings) {
-        try? TranscriptStore(settings: settings.history).clear()
-        reload(settings: settings)
-    }
-
-    func resetStats(settings: Settings) {
-        try? StatsStore(settings: settings.stats).reset()
-        reload(settings: settings)
     }
 }

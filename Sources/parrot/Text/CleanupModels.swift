@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The models a cleanup provider will actually accept, asked of the provider
@@ -8,7 +9,7 @@ import Foundation
 /// someone's dictation. The account's own list is the only thing that knows
 /// which models this particular key can call.
 enum CleanupModels {
-    struct Model: Identifiable, Equatable {
+    struct Model: Identifiable, Equatable, Codable {
         /// What goes in the request. This is the setting's value.
         let id: String
         /// What the provider calls it where it has a name for it; OpenAI only
@@ -29,15 +30,76 @@ enum CleanupModels {
     }
 
     /// Providers that run locally have nothing to list and return empty.
-    static func fetch(for provider: LLMProvider) async throws -> [Model] {
+    ///
+    /// Answered from a day-old cache where there is one: the list changes a
+    /// handful of times a year, and a round trip on every settings visit buys
+    /// nothing but a spinner. `force` is the manual refresh out of that.
+    static func fetch(for provider: LLMProvider, force: Bool = false) async throws -> [Model] {
         guard let account = provider.keychainAccount else { return [] }
         guard let key = Keychain.apiKey(for: account) else {
             throw ListError.missingAPIKey(account)
         }
+        if !force, let cached = Cache.load(provider, key: key) { return cached }
+
+        let models: [Model]
         switch provider {
         case .apple: return []
-        case .openai: return try await openAIModels(from: get(openAIRequest(key: key)))
-        case .anthropic: return try await anthropicModels(from: get(anthropicRequest(key: key)))
+        case .openai: models = try await openAIModels(from: get(openAIRequest(key: key)))
+        case .anthropic: models = try await anthropicModels(from: get(anthropicRequest(key: key)))
+        }
+        Cache.save(models, for: provider, key: key)
+        return models
+    }
+
+    // MARK: - Cache
+
+    /// A day of the provider's model list, per provider, in the same defaults
+    /// suite as everything else parrot persists.
+    ///
+    /// Keyed by the API key as well as the provider: a different key is a
+    /// different account, and the models it can reach are its own. The key is
+    /// only ever stored as a hash — the plaintext stays in the keychain.
+    enum Cache {
+        static let lifetime: TimeInterval = 24 * 60 * 60
+
+        private struct Entry: Codable {
+            let fetchedAt: Date
+            let keyHash: String
+            let models: [Model]
+        }
+
+        /// Swapped for a scratch suite in tests so a run doesn't throw away the
+        /// list the app is using.
+        static var defaults = UserDefaults(suiteName: SettingsStore.suiteName) ?? .standard
+
+        private static func storageKey(_ provider: LLMProvider) -> String {
+            "modelList.\(provider.rawValue)"
+        }
+
+        private static func hash(_ key: String) -> String {
+            SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+
+        static func load(_ provider: LLMProvider, key: String, now: Date = Date()) -> [Model]? {
+            guard let data = defaults.data(forKey: storageKey(provider)),
+                  let entry = try? JSONDecoder().decode(Entry.self, from: data),
+                  entry.keyHash == hash(key),
+                  now.timeIntervalSince(entry.fetchedAt) < lifetime,
+                  // An empty list cached is a picker with nothing in it for a
+                  // day; better to ask again.
+                  !entry.models.isEmpty
+            else { return nil }
+            return entry.models
+        }
+
+        static func save(_ models: [Model], for provider: LLMProvider, key: String) {
+            let entry = Entry(fetchedAt: Date(), keyHash: hash(key), models: models)
+            guard let data = try? JSONEncoder().encode(entry) else { return }
+            defaults.set(data, forKey: storageKey(provider))
+        }
+
+        static func clear(_ provider: LLMProvider) {
+            defaults.removeObject(forKey: storageKey(provider))
         }
     }
 

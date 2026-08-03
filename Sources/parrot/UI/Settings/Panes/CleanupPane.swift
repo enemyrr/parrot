@@ -18,14 +18,14 @@ struct CleanupPane: View {
             modeCards
 
             if cleanup.enabled {
-                providerCard
+                providerSection
                 if cleanup.provider == .apple {
                     appleStatusCard
                 } else {
                     credentialsCard
                 }
                 tuningCard
-                promptCard
+                promptSection
             }
         }
         .onAppear {
@@ -94,22 +94,23 @@ struct CleanupPane: View {
 
     // MARK: - Provider
 
-    private var providerCard: some View {
-        SettingsCard(header: "Provider") {
-            SettingsCustomRow(verticalPadding: 12) {
-                HStack(spacing: 8) {
-                    ForEach(LLMProvider.allCases) { provider in
-                        ProviderOption(
-                            provider: provider,
-                            selected: cleanup.provider == provider,
-                            available: Self.isAvailable(provider)
-                        ) {
-                            store.settings.cleanup.provider = provider
-                            // The model name belongs to the vendor that was
-                            // selected, so carrying it across would send OpenAI
-                            // a Claude id and fail every request.
-                            store.settings.cleanup.model = provider.defaultModel ?? ""
-                        }
+    /// Unboxed, like the mode cards above it and the provider chips on the
+    /// Squawk pane: the chips draw their own edges, so a card around them is a
+    /// second border with nothing to say.
+    private var providerSection: some View {
+        SettingsSection(header: "Provider") {
+            HStack(spacing: 10) {
+                ForEach(LLMProvider.allCases) { provider in
+                    ProviderOption(
+                        provider: provider,
+                        selected: cleanup.provider == provider,
+                        available: Self.isAvailable(provider)
+                    ) {
+                        store.settings.cleanup.provider = provider
+                        // The model name belongs to the vendor that was
+                        // selected, so carrying it across would send OpenAI
+                        // a Claude id and fail every request.
+                        store.settings.cleanup.model = provider.defaultModel ?? ""
                     }
                 }
             }
@@ -250,52 +251,33 @@ struct CleanupPane: View {
 
     // MARK: - Prompt
 
-    private var promptCard: some View {
-        SettingsCard(
+    private var promptSection: some View {
+        SettingsSection(
             header: "Instructions",
             footer: "Your vocabulary and languages are appended to whatever is here, "
                 + "so a custom prompt doesn't lose them."
         ) {
-            SettingsCustomRow(verticalPadding: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    CommittedText(text: $store.settings.cleanup.prompt) { draft in
-                        TextEditor(text: draft)
-                            .font(.system(size: 11, design: .monospaced))
-                            .scrollContentBackground(.hidden)
-                    }
-                        .padding(7)
-                        .frame(height: 130)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color(nsColor: .textBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(SettingsPalette.cardBorder, lineWidth: 0.5)
-                        )
-                        .overlay(alignment: .topLeading) {
-                            if store.settings.cleanup.prompt.isEmpty {
-                                Text("Using the built-in prompt.")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 15)
-                                    .allowsHitTesting(false)
-                            }
-                        }
+            VStack(alignment: .leading, spacing: 8) {
+                CommittedText(text: $store.settings.cleanup.prompt) { draft in
+                    PromptEditor(
+                        text: draft,
+                        placeholder: "Using the built-in prompt.",
+                        minHeight: 130,
+                        monospaced: true
+                    )
+                }
 
-                    HStack(spacing: 8) {
-                        Button("Load the built-in prompt") {
-                            store.settings.cleanup.prompt = CleanupPrompt.base
-                        }
-                        .controlSize(.small)
-
-                        Button("Reset to default") {
-                            store.settings.cleanup.prompt = ""
-                        }
-                        .controlSize(.small)
-                        .disabled(store.settings.cleanup.prompt.isEmpty)
+                HStack(spacing: 8) {
+                    Button("Load the built-in prompt") {
+                        store.settings.cleanup.prompt = CleanupPrompt.base
                     }
+                    .controlSize(.small)
+
+                    Button("Reset to default") {
+                        store.settings.cleanup.prompt = ""
+                    }
+                    .controlSize(.small)
+                    .disabled(store.settings.cleanup.prompt.isEmpty)
                 }
             }
         }
@@ -330,12 +312,12 @@ private struct CleanupModeCard: View {
             .padding(13)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(surface)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.cardCornerRadius, style: .continuous))
             // One ring, one width. Growing the border on selection shifts every
             // pixel inside it, which is what made the two cards look misaligned
             // — only the colour changes now.
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: SettingsMetrics.cardCornerRadius, style: .continuous)
                     .strokeBorder(borderColor, lineWidth: 1)
             )
         }
@@ -395,13 +377,13 @@ private struct CleanupModeCard: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: SettingsMetrics.chipCornerRadius, style: .continuous)
                     .fill(Color.primary.opacity(0.06))
             )
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: SettingsMetrics.panelCornerRadius, style: .continuous)
                 .fill(Color(nsColor: .textBackgroundColor))
         )
     }
@@ -436,7 +418,8 @@ private struct CleanupModeCard: View {
 // MARK: - Model list
 
 /// Holds the provider's model list for the picker: fetched once per provider,
-/// kept across pane switches, retried by hand when it fails.
+/// kept across pane switches, retried by hand when it fails. `CleanupModels`
+/// caches a day behind this, so the usual visit doesn't hit the network at all.
 @MainActor
 final class ModelListState: ObservableObject {
     @Published private(set) var models: [CleanupModels.Model] = []
@@ -456,7 +439,7 @@ final class ModelListState: ObservableObject {
 
         Task {
             do {
-                let fetched = try await CleanupModels.fetch(for: provider)
+                let fetched = try await CleanupModels.fetch(for: provider, force: force)
                 // The user may have switched providers mid-flight; a stale list
                 // would be a list of the wrong vendor's models.
                 guard loaded == provider else { return }
@@ -483,9 +466,10 @@ struct ModelPicker: View {
     let hasKey: Bool
     @ObservedObject var list: ModelListState
 
-    /// Chosen from the menu rather than stored; the NUL prefix keeps it from
+    /// Chosen from the menu rather than stored; the NUL prefix keeps them from
     /// colliding with any real model id.
     private static let customTag = "\u{0}custom"
+    private static let refreshTag = "\u{0}refresh"
 
     @State private var typing = false
 
@@ -542,10 +526,10 @@ struct ModelPicker: View {
         Binding(
             get: { selected },
             set: { new in
-                if new == Self.customTag {
-                    typing = true
-                } else {
-                    model = new
+                switch new {
+                case Self.customTag: typing = true
+                case Self.refreshTag: list.load(provider, force: true)
+                default: model = new
                 }
             }
         )
@@ -567,6 +551,9 @@ struct ModelPicker: View {
 
         if !list.models.isEmpty {
             Divider()
+            // The list is a day-old cache, so a model released this morning
+            // isn't in it. This is the way to ask again without waiting.
+            Text("Refresh list").tag(Self.refreshTag)
         }
         Text("Custom…").tag(Self.customTag)
     }
@@ -609,20 +596,25 @@ struct ProviderOption: View {
             }
             .padding(9)
             .frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.12) : SettingsPalette.keycapFill)
-            )
+            .background(shape.fill(selected ? Color.accentColor.opacity(0.10) : SettingsPalette.keycapFill))
+            // One ring, one width — the same rule the sample cards and the
+            // hotkey caps follow. The accent colour and the tinted fill already
+            // say which one is picked; tripling the border on top of that made
+            // the chosen chip a visibly heavier object than its neighbours,
+            // which is one signal too many for a three-way choice.
             .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(
-                        selected ? Color.accentColor : SettingsPalette.keycapBorder,
-                        lineWidth: selected ? 1.5 : 0.5
-                    )
+                shape.strokeBorder(
+                    selected ? Color.accentColor : SettingsPalette.keycapBorder,
+                    lineWidth: 1
+                )
             )
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: selected)
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: SettingsMetrics.panelCornerRadius, style: .continuous)
     }
 
     private var symbol: String {

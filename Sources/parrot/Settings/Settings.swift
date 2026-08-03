@@ -13,11 +13,23 @@ struct Settings: Codable, Equatable {
     /// Languages you actually speak, as ISO codes. Empty means no constraint.
     /// See `LanguageSelection` for what this does and does not do.
     var languages: [String]
+    /// Which microphone to record from. See `AudioSettings`.
+    var audio: AudioSettings
     var hotkey: Hotkey
     var latch: LatchSettings
     var squawk: SquawkSettings
+    /// How you sound, shared by both paths. See `StyleSettings` — it used to
+    /// live inside `squawk`, which is why decoding has a migration for it.
+    var style: StyleSettings
     var cleanup: CleanupSettings
     var wordlist: WordlistSettings
+    /// Phrases you say on purpose. Kept apart from `wordlist` because they are
+    /// a different thing that happens to be implemented the same way — see
+    /// `ShortcutExpander`.
+    var shortcuts: [TextShortcut]
+    /// Names read off the app you're dictating into. See `IntegrationSettings`
+    /// — this is the one thing that lets dictation look at a window at all.
+    var integrations: IntegrationSettings
     var history: HistorySettings
     var stats: StatsSettings
     var overlay: OverlaySettings
@@ -25,11 +37,15 @@ struct Settings: Codable, Equatable {
     static let `default` = Settings(
         model: ModelRegistry.recommended()?.id ?? "parakeet-v3",
         languages: [],
+        audio: .default,
         hotkey: .fn,
         latch: .default,
         squawk: .default,
+        style: .default,
         cleanup: .default,
         wordlist: .default,
+        shortcuts: [],
+        integrations: .default,
         history: .default,
         stats: .default,
         overlay: .default
@@ -43,11 +59,37 @@ struct Settings: Codable, Equatable {
         let d = Settings.default
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
         languages = try c.decodeIfPresent([String].self, forKey: .languages) ?? d.languages
+        audio = try c.decodeIfPresent(AudioSettings.self, forKey: .audio) ?? d.audio
         hotkey = try c.decodeIfPresent(Hotkey.self, forKey: .hotkey) ?? d.hotkey
         latch = try c.decodeIfPresent(LatchSettings.self, forKey: .latch) ?? d.latch
         squawk = try c.decodeIfPresent(SquawkSettings.self, forKey: .squawk) ?? d.squawk
+        // "About you" and the per-app profiles used to be squawk's alone. A blob
+        // written before they moved has no `style` key at all, and reading them
+        // back out of `squawk` is the difference between an upgrade that keeps
+        // what someone wrote and one that silently resets it.
+        if let stored = try c.decodeIfPresent(StyleSettings.self, forKey: .style) {
+            style = stored
+        } else if let legacy = try c.decodeIfPresent(LegacyStyle.self, forKey: .squawk),
+            legacy.about != nil || legacy.profiles != nil
+        {
+            style = StyleSettings(
+                // Only a blob that actually carried profiles gets them turned
+                // into categories. One that never had the key keeps the
+                // starters, rather than being migrated down to a single
+                // catch-all because it had nothing to migrate.
+                categories: legacy.profiles.map {
+                    StyleSettings.migrating(tone: .formal, length: .natural, profiles: $0)
+                } ?? d.style.categories,
+                about: legacy.about ?? d.style.about
+            )
+        } else {
+            style = d.style
+        }
         cleanup = try c.decodeIfPresent(CleanupSettings.self, forKey: .cleanup) ?? d.cleanup
         wordlist = try c.decodeIfPresent(WordlistSettings.self, forKey: .wordlist) ?? d.wordlist
+        shortcuts = try c.decodeIfPresent([TextShortcut].self, forKey: .shortcuts) ?? d.shortcuts
+        integrations = try c.decodeIfPresent(IntegrationSettings.self, forKey: .integrations)
+            ?? d.integrations
         history = try c.decodeIfPresent(HistorySettings.self, forKey: .history) ?? d.history
         stats = try c.decodeIfPresent(StatsSettings.self, forKey: .stats) ?? d.stats
         overlay = try c.decodeIfPresent(OverlaySettings.self, forKey: .overlay) ?? d.overlay
@@ -56,22 +98,30 @@ struct Settings: Codable, Equatable {
     init(
         model: String,
         languages: [String],
+        audio: AudioSettings,
         hotkey: Hotkey,
         latch: LatchSettings,
         squawk: SquawkSettings,
+        style: StyleSettings,
         cleanup: CleanupSettings,
         wordlist: WordlistSettings,
+        shortcuts: [TextShortcut],
+        integrations: IntegrationSettings,
         history: HistorySettings,
         stats: StatsSettings,
         overlay: OverlaySettings
     ) {
         self.model = model
         self.languages = languages
+        self.audio = audio
         self.hotkey = hotkey
         self.latch = latch
         self.squawk = squawk
+        self.style = style
         self.cleanup = cleanup
         self.wordlist = wordlist
+        self.shortcuts = shortcuts
+        self.integrations = integrations
         self.history = history
         self.stats = stats
         self.overlay = overlay
@@ -87,7 +137,48 @@ struct Settings: Codable, Equatable {
     }
 }
 
+/// The two fields that moved out of `squawk` and into `style`.
+///
+/// Both are gone from `SquawkSettings`, so nothing decodes them any more — this
+/// reads the old shape out of the same JSON object one time, on the first load
+/// after the upgrade, and is never written back.
+private struct LegacyStyle: Decodable {
+    let about: String?
+    let profiles: [LegacyProfile]?
+}
+
 // MARK: - Sections
+
+/// Which microphone recordings come from, and what happens to everything else
+/// coming out of the Mac while one is in progress.
+///
+/// The device is stored as a CoreAudio UID rather than a device id, because the
+/// id is assigned per boot and would name a different device — or nothing — the
+/// next morning. An empty UID means "whatever macOS is using", which is both the
+/// default and what the menu ticks until someone chooses otherwise.
+struct AudioSettings: Codable, Equatable {
+    var inputDeviceUID: String
+    /// Silence the Mac's output for the length of a recording. Off by default:
+    /// reaching into the system volume is not something dictation should start
+    /// doing to someone who never asked for it. See `SystemAudioMute`.
+    var muteWhileDictating: Bool
+
+    static let `default` = AudioSettings(inputDeviceUID: "", muteWhileDictating: false)
+
+    init(inputDeviceUID: String, muteWhileDictating: Bool) {
+        self.inputDeviceUID = inputDeviceUID
+        self.muteWhileDictating = muteWhileDictating
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AudioSettings.default
+        inputDeviceUID = try c.decodeIfPresent(String.self, forKey: .inputDeviceUID)
+            ?? d.inputDeviceUID
+        muteWhileDictating = try c.decodeIfPresent(Bool.self, forKey: .muteWhileDictating)
+            ?? d.muteWhileDictating
+    }
+}
 
 struct LatchSettings: Codable, Equatable {
     /// Double-tapping the hotkey keeps recording without holding it.
@@ -158,11 +249,10 @@ struct SquawkSettings: Codable, Equatable {
     /// what matters is how much text lands in the field.
     var maxCharacters: Int
     /// Empty means the built-in base prompt.
+    ///
+    /// Who you are and how each app should be written for are *not* here — they
+    /// are in `StyleSettings`, because dictation needs them too.
     var prompt: String
-    /// Who you are, in your words. Injected into every squawk.
-    var about: String
-    /// Per-app instructions, first match wins.
-    var profiles: [AppProfile]
     /// Bundle IDs never read from, on top of the ones that are always excluded.
     var excludedBundleIDs: [String]
     var context: ContextSettings
@@ -179,8 +269,6 @@ struct SquawkSettings: Codable, Equatable {
         timeoutS: 25,
         maxCharacters: 4000,
         prompt: "",
-        about: "",
-        profiles: AppProfile.starters,
         excludedBundleIDs: [],
         context: .default
     )
@@ -194,8 +282,6 @@ struct SquawkSettings: Codable, Equatable {
         timeoutS: Double,
         maxCharacters: Int,
         prompt: String,
-        about: String,
-        profiles: [AppProfile],
         excludedBundleIDs: [String],
         context: ContextSettings
     ) {
@@ -207,8 +293,6 @@ struct SquawkSettings: Codable, Equatable {
         self.timeoutS = timeoutS
         self.maxCharacters = maxCharacters
         self.prompt = prompt
-        self.about = about
-        self.profiles = profiles
         self.excludedBundleIDs = excludedBundleIDs
         self.context = context
     }
@@ -225,22 +309,14 @@ struct SquawkSettings: Codable, Equatable {
         timeoutS = try c.decodeIfPresent(Double.self, forKey: .timeoutS) ?? d.timeoutS
         maxCharacters = try c.decodeIfPresent(Int.self, forKey: .maxCharacters) ?? d.maxCharacters
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? d.prompt
-        about = try c.decodeIfPresent(String.self, forKey: .about) ?? d.about
-        profiles = try c.decodeIfPresent([AppProfile].self, forKey: .profiles) ?? d.profiles
         excludedBundleIDs = try c.decodeIfPresent([String].self, forKey: .excludedBundleIDs)
             ?? d.excludedBundleIDs
         context = try c.decodeIfPresent(ContextSettings.self, forKey: .context) ?? d.context
     }
 
-    /// The profile for a bundle ID, if one claims it.
-    func profile(for bundleID: String?) -> AppProfile? {
-        guard let bundleID else { return nil }
-        return profiles.first { $0.enabled && $0.matches(bundleID) }
-    }
-
     func isExcluded(bundleID: String?) -> Bool {
         guard let bundleID else { return false }
-        return excludedBundleIDs.contains { $0.caseInsensitiveCompare(bundleID) == .orderedSame }
+        return BundleIDPattern.matches(any: excludedBundleIDs, bundleID)
     }
 
     /// Two hotkeys that are the same key can't be told apart, and the monitor
@@ -251,86 +327,24 @@ struct SquawkSettings: Codable, Equatable {
     }
 }
 
-/// How an app should be written for.
+/// Bundle id matching, with the one wildcard the settings file allows: a
+/// trailing `*`, so `com.google.Chrome*` claims the helper processes too.
 ///
-/// The same instruction produces a very different right answer in Mail and in
-/// Messages, and neither the model nor a global prompt can know which one you
-/// are in. This is the smallest thing that fixes it.
-struct AppProfile: Codable, Equatable, Identifiable {
-    var id: UUID
-    /// Shown in the settings list, and named to the model as the thing it is
-    /// writing for.
-    var name: String
-    /// Bundle IDs this claims. Matched case-insensitively, with a trailing `*`
-    /// allowed so `com.google.Chrome*` catches the helper processes too.
-    var bundleIDs: [String]
-    var instructions: String
-    var enabled: Bool
-
-    init(
-        id: UUID = UUID(),
-        name: String,
-        bundleIDs: [String],
-        instructions: String,
-        enabled: Bool = true
-    ) {
-        self.id = id
-        self.name = name
-        self.bundleIDs = bundleIDs
-        self.instructions = instructions
-        self.enabled = enabled
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "App"
-        bundleIDs = try c.decodeIfPresent([String].self, forKey: .bundleIDs) ?? []
-        instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
-        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-    }
-
-    func matches(_ bundleID: String) -> Bool {
-        bundleIDs.contains { pattern in
-            guard pattern.hasSuffix("*") else {
-                return pattern.caseInsensitiveCompare(bundleID) == .orderedSame
-            }
-            let prefix = String(pattern.dropLast())
-            return bundleID.lowercased().hasPrefix(prefix.lowercased())
+/// Shared, because a pattern typed into a style profile and the same pattern
+/// typed into the never-read list have to mean the same thing — an exclusion
+/// that quietly refuses the wildcard is an exclusion that doesn't hold.
+enum BundleIDPattern {
+    static func matches(_ pattern: String, _ bundleID: String) -> Bool {
+        guard pattern.hasSuffix("*") else {
+            return pattern.caseInsensitiveCompare(bundleID) == .orderedSame
         }
+        let prefix = String(pattern.dropLast())
+        return bundleID.lowercased().hasPrefix(prefix.lowercased())
     }
 
-    /// Shipped switched on, because an empty profile list makes squawk look
-    /// like it ignores the app it is in — and these four are where the
-    /// difference is most obvious.
-    static let starters: [AppProfile] = [
-        AppProfile(
-            name: "Mail",
-            bundleIDs: ["com.apple.mail", "com.readdle.smartemail-Mac", "com.microsoft.Outlook"],
-            instructions: "Full sentences. Keep the greeting and sign off the way the thread "
-                + "does. Don't restate the question you're answering."
-        ),
-        AppProfile(
-            name: "Messages & chat",
-            bundleIDs: [
-                "com.apple.MobileSMS", "net.whatsapp.WhatsApp", "ru.keepcoder.Telegram",
-            ],
-            instructions: "One short message. No greeting, no sign-off, no subject line. "
-                + "Match the casing and punctuation of the conversation, including lowercase."
-        ),
-        AppProfile(
-            name: "Slack & Discord",
-            bundleIDs: ["com.tinyspeck.slackmacgap", "com.hnc.Discord"],
-            instructions: "Short and direct, one paragraph. No greeting. Threads are informal — "
-                + "write the way the channel does."
-        ),
-        AppProfile(
-            name: "Notes & documents",
-            bundleIDs: ["com.apple.Notes", "md.obsidian", "com.apple.TextEdit"],
-            instructions: "Prose or bullets, whichever the document already uses. No greeting "
-                + "and no sign-off — this is a document, not a message."
-        ),
-    ]
+    static func matches(any patterns: [String], _ bundleID: String) -> Bool {
+        patterns.contains { matches($0, bundleID) }
+    }
 }
 
 /// How much of the screen squawk is allowed to read.
@@ -503,6 +517,44 @@ struct Replacement: Codable, Equatable, Identifiable {
     }
 }
 
+/// A phrase you say on purpose, and the text it turns into.
+///
+/// Deliberately not a `Replacement`. A replacement fixes a word the transcriber
+/// got wrong; this is a trigger for something you'd rather not say out loud in
+/// full — an address, a canned prompt, a signature. See `ShortcutExpander` for
+/// what falls out of that difference.
+struct TextShortcut: Codable, Equatable, Identifiable {
+    var id: UUID
+    /// What you say. Matched case-insensitively, whole words only, and tolerant
+    /// of the punctuation the transcriber puts between the words.
+    var trigger: String
+    /// What lands at the cursor. May be several lines.
+    var expansion: String
+
+    init(id: UUID = UUID(), trigger: String = "", expansion: String = "") {
+        self.id = id
+        self.trigger = trigger
+        self.expansion = expansion
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        trigger = try c.decodeIfPresent(String.self, forKey: .trigger) ?? ""
+        expansion = try c.decodeIfPresent(String.self, forKey: .expansion) ?? ""
+    }
+
+    /// Trimmed, or nil if either half is still blank. Half-typed rows are
+    /// dropped here rather than in the UI, so a shortcut can sit in the list
+    /// while you're writing it without firing on the next thing you say.
+    var usable: (trigger: String, expansion: String)? {
+        let trigger = self.trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expansion = self.expansion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trigger.isEmpty, !expansion.isEmpty else { return nil }
+        return (trigger, expansion)
+    }
+}
+
 struct WordlistSettings: Codable, Equatable {
     /// Terms the cleanup model is told to preserve verbatim.
     var vocabulary: [String]
@@ -528,21 +580,116 @@ struct WordlistSettings: Codable, Equatable {
     /// UI, so a half-typed rule can sit in the table without taking effect.
     var replacementMap: [String: String] {
         var map: [String: String] = [:]
-        for rule in replacements where !rule.from.trimmingCharacters(in: .whitespaces).isEmpty {
-            map[rule.from] = rule.to
+        for rule in replacements {
+            // Trimmed, not just checked: a key with a trailing space compiles
+            // to a pattern that demands one, so the rule would fire mid-sentence
+            // and silently not before a full stop.
+            let from = rule.from.trimmingCharacters(in: .whitespaces)
+            guard !from.isEmpty else { continue }
+            map[from] = rule.to
         }
         return map
     }
 }
 
+/// Names read off the app you're dictating into, and what is done with them.
+///
+/// **Off by default, and that is not timidity.** Everywhere else in parrot,
+/// dictation reads exactly one thing about the app in front — its bundle id —
+/// and squawk is the path that reads windows. This crosses that line, so it is
+/// something the user turns on rather than something they discover has been
+/// happening. What crosses it is narrow: `RosterReader` collects short labels
+/// and their positions and throws the prose away, so what is held is a list of
+/// channel names and filenames, never a message. None of it is written to
+/// history, and none of it is sent anywhere unless `learnVocabulary` is on and
+/// a remote transcriber or cleaner is configured — in which case the names go,
+/// as hints, and still not the contents.
+struct IntegrationSettings: Codable, Equatable {
+    /// The master switch. Nothing walks a window until this is on.
+    var enabled: Bool
+    /// Integration ids explicitly switched off. An opt-out list rather than an
+    /// opt-in one, so an app added in a later build works without anyone having
+    /// to go and find the new row.
+    var disabledIDs: [String]
+    /// "at Sara" → "@Sara", "hashtag eng parrot" → "#eng-parrot".
+    var tagMentions: Bool
+    /// "use effect" → `useEffect`. Separate from `tagMentions` because it is the
+    /// one rewrite with no trigger word in front of it, and so the one most
+    /// likely to fire on a sentence that meant the English words.
+    var spellSymbols: Bool
+    /// Hand the names to the transcriber and the cleaner as hints. This is what
+    /// makes the tagging land — a rule for "eng parrot" never fires if the
+    /// decoder wrote "ang parrot".
+    var learnVocabulary: Bool
+    /// Ceiling on the roster. A guard against an app that publishes thousands of
+    /// short labels turning into thousands of rewrite rules.
+    var maxEntities: Int
+
+    static let `default` = IntegrationSettings(
+        enabled: false,
+        disabledIDs: [],
+        tagMentions: true,
+        spellSymbols: true,
+        learnVocabulary: true,
+        maxEntities: 200
+    )
+
+    init(
+        enabled: Bool,
+        disabledIDs: [String],
+        tagMentions: Bool,
+        spellSymbols: Bool,
+        learnVocabulary: Bool,
+        maxEntities: Int
+    ) {
+        self.enabled = enabled
+        self.disabledIDs = disabledIDs
+        self.tagMentions = tagMentions
+        self.spellSymbols = spellSymbols
+        self.learnVocabulary = learnVocabulary
+        self.maxEntities = max(1, maxEntities)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = IntegrationSettings.default
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        disabledIDs = try c.decodeIfPresent([String].self, forKey: .disabledIDs) ?? d.disabledIDs
+        tagMentions = try c.decodeIfPresent(Bool.self, forKey: .tagMentions) ?? d.tagMentions
+        spellSymbols = try c.decodeIfPresent(Bool.self, forKey: .spellSymbols) ?? d.spellSymbols
+        learnVocabulary = try c.decodeIfPresent(Bool.self, forKey: .learnVocabulary)
+            ?? d.learnVocabulary
+        maxEntities = max(1, try c.decodeIfPresent(Int.self, forKey: .maxEntities) ?? d.maxEntities)
+    }
+
+    func isEnabled(_ integrationID: String) -> Bool {
+        !disabledIDs.contains(integrationID)
+    }
+
+    mutating func setEnabled(_ isOn: Bool, for integrationID: String) {
+        if isOn {
+            disabledIDs.removeAll { $0 == integrationID }
+        } else if !disabledIDs.contains(integrationID) {
+            disabledIDs.append(integrationID)
+        }
+    }
+
+    /// Whether anything would happen for this app if it were read. An
+    /// integration with every rewrite switched off is one that still costs a
+    /// walk and produces nothing — worth not doing.
+    var doesAnything: Bool {
+        enabled && (tagMentions || spellSymbols || learnVocabulary)
+    }
+}
+
 /// The pill.
 ///
-/// It used to carry a `style` the user picked. It no longer does: the
-/// visualiser is how you tell dictation from squawk at a glance, so it belongs
-/// to the mode rather than to taste. A stored `style` from an older build
-/// decodes to nothing and is dropped on the next write.
+/// It used to carry a `style` and an `enabled` the user picked. It no longer
+/// does: the visualiser is how you tell dictation from squawk at a glance, so
+/// it belongs to the mode rather than to taste, and knowing the mic is hot is
+/// not optional. Both decode to nothing and are dropped on the next write.
+/// `--no-overlay` remains for the one run where the pill is in the way.
 struct OverlaySettings: Codable, Equatable {
-    var enabled: Bool
     /// Meter sensitivity. 1.0 is the default; higher lowers the noise floor so
     /// quieter mics and softer voices still fill the bars.
     ///
@@ -553,17 +700,15 @@ struct OverlaySettings: Codable, Equatable {
         didSet { sensitivity = Self.clampSensitivity(sensitivity) }
     }
 
-    static let `default` = OverlaySettings(enabled: true, sensitivity: 1)
+    static let `default` = OverlaySettings(sensitivity: 1)
 
-    init(enabled: Bool, sensitivity: Double) {
-        self.enabled = enabled
+    init(sensitivity: Double) {
         self.sensitivity = Self.clampSensitivity(sensitivity)
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = OverlaySettings.default
-        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
         let raw = try c.decodeIfPresent(Double.self, forKey: .sensitivity) ?? d.sensitivity
         sensitivity = Self.clampSensitivity(raw)
     }

@@ -7,37 +7,54 @@ import SwiftUI
 enum SettingsMetrics {
     static let pageHorizontalPadding: CGFloat = 26
     static let pageVerticalPadding: CGFloat = 22
+    /// Three radii, and only three: a surface that sits on the page, a panel
+    /// nested inside one, and a chip inside that. Every view picking its own
+    /// is how the window ended up with six of them, none a multiple of any
+    /// other, and nested corners that visibly don't belong together.
     static let cardCornerRadius: CGFloat = 10
+    static let panelCornerRadius: CGFloat = 8
+    static let chipCornerRadius: CGFloat = 6
     static let rowHorizontalPadding: CGFloat = 14
     static let rowVerticalPadding: CGFloat = 10
     /// Rows line their controls up on a shared column so labels of different
     /// lengths don't leave the controls ragged.
     static let controlColumnWidth: CGFloat = 200
     static let sectionSpacing: CGFloat = 22
+    /// How far a header or footer sits in from the page margin. Shared by cards
+    /// and sections, so a boxed group and an unboxed one on the same page hang
+    /// their labels on the same column.
+    static let labelInset: CGFloat = 4
+    /// Between a group's label and the thing it labels.
+    static let labelSpacing: CGFloat = 6
 }
 
 // MARK: - Page
 
 /// A pane's outer frame: a title, an optional one-line explanation of what the
-/// pane is for, then scrolling content.
+/// pane is for, then scrolling content. No title at all is allowed — Home's
+/// headline is its content, and "Home" above it would just caption the room.
 struct SettingsPage<Content: View>: View {
-    let title: String
+    var title: String?
     var subtitle: String?
     @ViewBuilder var content: Content
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsMetrics.sectionSpacing) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 20, weight: .semibold))
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+                if title != nil || subtitle != nil {
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let title {
+                            Text(title)
+                                .font(.system(size: 20, weight: .semibold))
+                        }
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.bottom, 2)
                 }
-                .padding(.bottom, 2)
 
                 content
             }
@@ -54,23 +71,70 @@ struct SettingsPage<Content: View>: View {
     }
 }
 
+// MARK: - Group labels
+
+/// The label above a card or a section, and optionally a control parked at the
+/// end of it — History's sort menu and search field.
+///
+/// One view for both, because a boxed group and an unboxed one on the same page
+/// have to hang their labels on the same column and set them in the same type.
+/// Two copies of this drifted to two insets, and Style showed it: "APPLIES TO"
+/// and "TONE" were two pixels out of line with each other.
+struct SettingsGroupLabel<Accessory: View>: View {
+    let title: String
+    @ViewBuilder var accessory: () -> Accessory
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 12)
+            accessory()
+        }
+        .padding(.leading, SettingsMetrics.labelInset)
+    }
+}
+
+extension SettingsGroupLabel where Accessory == EmptyView {
+    init(_ title: String) {
+        self.init(title: title) { EmptyView() }
+    }
+}
+
+/// The explanation under a group. Same type and inset wherever it appears.
+struct SettingsGroupFooter: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, SettingsMetrics.labelInset)
+            .padding(.top, 1)
+    }
+}
+
 // MARK: - Card
 
 /// A group of rows on one raised surface, with hairlines between them.
 /// Optionally headed by a label, the way System Settings groups related knobs.
+///
+/// Use this for rows — a label and a control, or a line of custom content that
+/// doesn't draw its own box. Anything with its own edges goes in a
+/// `SettingsSection` instead.
 struct SettingsCard<Content: View>: View {
     var header: String?
     var footer: String?
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: SettingsMetrics.labelSpacing) {
             if let header {
-                Text(header.uppercased())
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 4)
+                SettingsGroupLabel(header)
             }
 
             _VariadicView.Tree(DividedRows()) { content }
@@ -82,12 +146,33 @@ struct SettingsCard<Content: View>: View {
                 )
 
             if let footer {
-                Text(footer)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 1)
+                SettingsGroupFooter(text: footer)
+            }
+        }
+    }
+}
+
+/// A card's header and footer with no box around the content.
+///
+/// For content that already draws its own edges — the sample cards, the
+/// provider chips, a prompt editor. Inside a `SettingsCard` those sit a border
+/// inside a border, and the outer one is the one carrying no information: it
+/// fences off a single control that was never ambiguous about where it began.
+struct SettingsSection<Content: View>: View {
+    var header: String?
+    var footer: String?
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SettingsMetrics.labelSpacing) {
+            if let header {
+                SettingsGroupLabel(header)
+            }
+
+            content
+
+            if let footer {
+                SettingsGroupFooter(text: footer)
             }
         }
     }
@@ -181,6 +266,112 @@ struct SettingsCustomRow<Content: View>: View {
 }
 
 // MARK: - Pieces
+
+/// A plain multi-line editor with a placeholder, which `TextEditor` has no
+/// notion of.
+///
+/// Every long-text field in the window is one of these: the squawk prompt, the
+/// cleanup instructions, a category's habits, a shortcut's expansion. They were
+/// four hand-rolled boxes at three different radii on two different fills, which
+/// is four places for the next tweak to be applied to one of.
+struct PromptEditor: View {
+    @Binding var text: String
+    let placeholder: String
+    var minHeight: CGFloat = 80
+    /// Monospaced for text that is read as instructions to a machine rather than
+    /// as prose — the cleanup prompt.
+    var monospaced = false
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: SettingsMetrics.panelCornerRadius, style: .continuous)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if text.isEmpty {
+                Text(placeholder)
+                    .font(font)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: $text)
+                .font(font)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: minHeight)
+        }
+        .padding(4)
+        .background(shape.fill(SettingsPalette.keycapFill))
+        .overlay(shape.strokeBorder(SettingsPalette.keycapBorder, lineWidth: 0.5))
+    }
+
+    private var font: Font {
+        monospaced
+            ? .system(size: 11, design: .monospaced)
+            : .system(size: 11)
+    }
+}
+
+/// What a probe read, verbatim.
+///
+/// Squawk's context inspector and the Integrations check answer the same
+/// question — "what would you have seen just now?" — so they answer it in the
+/// same shape rather than one in a scrolling panel and one as loose text.
+struct ProbeReport: View {
+    let text: String
+    /// Past this the report scrolls in place instead of stretching the page. A
+    /// window capture can run to twenty thousand characters; an integration
+    /// roster is a dozen lines, and nesting *that* in a scroll view would be a
+    /// scroll trap around content that already fits.
+    var maxHeight: CGFloat = 220
+
+    private var isLong: Bool { text.count > 1200 }
+
+    var body: some View {
+        Group {
+            if isLong {
+                ScrollView { lines }
+                    .frame(height: maxHeight)
+            } else {
+                lines
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: SettingsMetrics.panelCornerRadius, style: .continuous)
+                .fill(SettingsPalette.keycapFill)
+        )
+    }
+
+    private var lines: some View {
+        Text(text)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(9)
+    }
+}
+
+/// The one-of-N mark: a ring that fills in when chosen.
+///
+/// Shared so the model list and the microphone list don't disagree about what
+/// picking something looks like — one was a radio, the other a checkmark, for
+/// the same job in two sheets a click apart.
+struct SelectionMark: View {
+    let selected: Bool
+
+    var body: some View {
+        Circle()
+            .strokeBorder(
+                selected ? Color.accentColor : Color(nsColor: .separatorColor),
+                lineWidth: selected ? 5 : 1
+            )
+            .frame(width: 14, height: 14)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: selected)
+    }
+}
 
 /// Free-text that reaches the store when the user is done with it, rather than
 /// on every keystroke.
@@ -445,7 +636,36 @@ enum SettingsPalette {
         Color(nsColor: .separatorColor)
     }
 
+    /// The face of a keycap that is also a button: lighter at the top, so it
+    /// reads as catching the light rather than as a flat chip.
+    static var keycapFace: LinearGradient {
+        LinearGradient(
+            colors: [keycapFill, keycapFill.opacity(0.8)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     static var chipFill: Color {
         Color(nsColor: .quaternaryLabelColor).opacity(0.5)
+    }
+
+    /// The recess a `GlassTabs` puck rides in — just enough to read as inset.
+    static var tabTrackFill: Color {
+        Color(nsColor: .quaternaryLabelColor).opacity(0.3)
+    }
+}
+
+extension View {
+    /// Liquid Glass where the OS has it, the flat chip fill everywhere else —
+    /// the same rule the `GlassTabs` puck follows. For the small controls that
+    /// aren't AppKit's to draw: search fields, chip buttons.
+    @ViewBuilder
+    func glassChip(in shape: some InsettableShape, interactive: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        } else {
+            background(shape.fill(SettingsPalette.chipFill))
+        }
     }
 }

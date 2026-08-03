@@ -11,7 +11,7 @@ struct Parrot: ParsableCommand {
             Run.self, Start.self, Stop.self, Restart.self, Status.self, Logs.self,
             SettingsCommand.self, Setup.self, Doctor.self, Models.self,
             History.self, Stats.self, Key.self, Cleanup.self, Install.self,
-            OverlayPreview.self, ContextCommand.self, SquawkCommand.self,
+            OverlayPreview.self, ContextCommand.self, RosterCommand.self, SquawkCommand.self,
         ],
         defaultSubcommand: Run.self
     )
@@ -93,12 +93,17 @@ struct SettingsCommand: ParsableCommand {
 
         let requested: SettingsPane
         if let pane {
-            guard let match = SettingsPane(rawValue: pane.lowercased()) else {
+            let name = pane.lowercased()
+            // "general" was the old name for what is now Home; scripts using
+            // it shouldn't break.
+            guard let match = SettingsPane(rawValue: name)
+                ?? (name == "general" ? .home : nil)
+            else {
                 throw ValidationError("Unknown pane '\(pane)'. Use one of: \(Self.paneList).")
             }
             requested = match
         } else {
-            requested = .general
+            requested = .home
         }
 
         // The daemon owns the real window, with a live engine behind it, and
@@ -139,17 +144,42 @@ final class StandaloneSettingsDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// First-run setup, which now lives in the settings window. Kept as a command
-/// because the install script and a lot of muscle memory point at it.
+/// The guided first run. Opens on its own here — the daemon shows the same
+/// window by itself the first time it starts, and this is how anyone gets back
+/// to it afterwards.
 struct Setup: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Open the permissions checklist."
+        abstract: "Walk through microphone, accessibility and your key."
     )
 
     func run() throws {
-        var settings = SettingsCommand()
-        settings.pane = SettingsPane.permissions.rawValue
-        try settings.run()
+        LegacyConfigMigration.runIfNeeded()
+
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        let delegate = MainActor.assumeIsolated { StandaloneSetupDelegate() }
+        app.delegate = delegate
+        app.run()
+    }
+}
+
+/// Keeps the standalone setup window alive and quits with it.
+///
+/// The panes it drives all work with nothing running: permissions are the
+/// system's answer, not the daemon's, and the model can be fetched from here
+/// too. Only the "try it" field at the end needs a live parrot, and it says so.
+@MainActor
+final class StandaloneSetupDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        OnboardingWindowController.shared.show(
+            store: .shared,
+            catalog: .shared,
+            context: SettingsWindowController.shared.context
+        )
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
 }
 
@@ -547,8 +577,9 @@ struct Cleanup: ParsableCommand {
             }
 
             let wordlist = Wordlist(settings: SettingsStore.current().wordlist)
+            let shortcuts = ShortcutExpander(shortcuts: SettingsStore.current().shortcuts)
             let context = CleanupContext(
-                vocabulary: wordlist.vocabulary,
+                vocabulary: wordlist.vocabulary + shortcuts.triggers,
                 languages: LanguageSelection.displayNames(SettingsStore.current().languages)
             )
 

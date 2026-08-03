@@ -3,14 +3,17 @@ import SwiftUI
 
 /// Where models are chosen and fetched.
 ///
-/// This pane is the reason the recording pill no longer doubles as a download
-/// HUD: a 460 MB fetch needs somewhere it can show a real progress bar, a size,
-/// a failure with a retry, and a way to get the space back — none of which fit
-/// in a capsule at the bottom of the screen.
-struct ModelsPane: View {
+/// A sheet off Home rather than a sidebar row: which model transcribes is
+/// decided once and then left alone, so it belongs behind a row that states the
+/// answer. It is still a full page inside — a 460 MB fetch needs somewhere it
+/// can show a real progress bar, a size, a failure with a retry, and a way to
+/// get the space back, none of which fit in a capsule at the bottom of the
+/// screen.
+struct ModelsDialog: View {
     @ObservedObject var store: SettingsStore
     @ObservedObject var catalog: ModelCatalog
     @ObservedObject var context: SettingsContext
+    let dismiss: () -> Void
 
     @State private var deleteCandidate: TranscriptionModel?
     @StateObject private var keys = APIKeyState()
@@ -18,11 +21,15 @@ struct ModelsPane: View {
     private var activeModel: TranscriptionModel { store.settings.resolvedModel }
 
     var body: some View {
-        SettingsPage(
+        SettingsDialog(
             title: "Models",
             subtitle: activeModel.isLocal
                 ? "Transcription runs entirely on this Mac, on the Neural Engine."
-                : "Transcription runs on OpenAI's servers. Your audio leaves this Mac."
+                : "Transcription runs on OpenAI's servers. Your audio leaves this Mac.",
+            // Wider than the other sheets: the download rows carry a progress
+            // bar, a phase and a Cancel button on one line.
+            width: 560,
+            dismiss: dismiss
         ) {
             SettingsCard(header: "On this Mac") {
                 ForEach(ModelRegistry.shared.filter(\.isLocal), id: \.id) { model in
@@ -290,22 +297,6 @@ private struct CloudModelRow: View {
             parts.append("ready")
         }
         return parts.joined(separator: " · ")
-    }
-}
-
-private struct SelectionMark: View {
-    let selected: Bool
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .strokeBorder(
-                    selected ? Color.accentColor : Color(nsColor: .separatorColor),
-                    lineWidth: selected ? 5 : 1
-                )
-                .frame(width: 14, height: 14)
-        }
-        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: selected)
     }
 }
 
