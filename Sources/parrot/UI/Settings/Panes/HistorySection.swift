@@ -102,20 +102,23 @@ struct HistorySection: View {
 
     // MARK: - List
 
+    /// No card. The list is the entire section, so a fill and an edge fence it
+    /// off from nothing — and they pushed every row 10pt to the right of the
+    /// "History" label heading it. The hairlines already separate the rows.
     private var listCard: some View {
-        SettingsCard {
+        DividedRowStack(dividerInset: SettingsMetrics.labelInset) {
             if data.items.isEmpty {
-                SettingsCustomRow(verticalPadding: 18) {
+                SettingsCustomRow(verticalPadding: 18, horizontalPadding: SettingsMetrics.labelInset) {
                     Text(emptyMessage)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
             } else {
-                ForEach(data.items) { item in
+                ForEach(Array(data.items.enumerated()), id: \.element.id) { index, item in
                     switch item.kind {
                     case .day(let label):
-                        DayHeaderRow(label: label)
+                        DayHeaderRow(label: label, isFirst: index == 0)
                     case .entry(let entry):
                         TranscriptRow(entry: entry)
                     }
@@ -123,7 +126,7 @@ struct HistorySection: View {
             }
 
             if data.hasMore {
-                SettingsCustomRow(verticalPadding: 8) {
+                SettingsCustomRow(verticalPadding: 8, horizontalPadding: SettingsMetrics.labelInset) {
                     Button("Show \(data.nextPageSize) more") { data.showMore() }
                         .buttonStyle(.link)
                         .font(.system(size: 12))
@@ -174,14 +177,17 @@ struct HistorySection: View {
 /// something that read like an empty row.
 private struct DayHeaderRow: View {
     let label: String
+    /// The first heading already has the section label above it; 14pt on top of
+    /// that reads as a hole rather than as the space between two days.
+    var isFirst = false
 
     var body: some View {
-        SettingsCustomRow(verticalPadding: 0) {
+        SettingsCustomRow(verticalPadding: 0, horizontalPadding: SettingsMetrics.labelInset) {
             Text(label.uppercased())
                 .font(.system(size: 9, weight: .semibold))
                 .tracking(0.6)
                 .foregroundStyle(.tertiary)
-                .padding(.top, 14)
+                .padding(.top, isFirst ? 2 : 14)
                 .padding(.bottom, 4)
         }
         .plainCardRow()
@@ -204,7 +210,7 @@ private struct TranscriptRow: View {
     private var showsRaw: Bool { entry.cleaned && entry.raw != entry.text }
 
     var body: some View {
-        SettingsCustomRow(verticalPadding: 9) {
+        SettingsCustomRow(verticalPadding: 9, horizontalPadding: SettingsMetrics.labelInset) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .top, spacing: 8) {
                     Text(entry.text)
@@ -240,7 +246,12 @@ private struct TranscriptRow: View {
                 withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() }
             }
         }
-        .background(hovering ? Color.primary.opacity(0.035) : .clear)
+        // Rounded now that there is no card edge for a square highlight to run
+        // into — on the bare page it would read as a band across the window.
+        .background(
+            RoundedRectangle(cornerRadius: SettingsMetrics.chipCornerRadius, style: .continuous)
+                .fill(hovering ? Color.primary.opacity(0.035) : .clear)
+        )
     }
 
     /// Copy rather than re-inject: focus has long since gone back to whatever

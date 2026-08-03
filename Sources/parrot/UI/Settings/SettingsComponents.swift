@@ -137,7 +137,7 @@ struct SettingsCard<Content: View>: View {
                 SettingsGroupLabel(header)
             }
 
-            _VariadicView.Tree(DividedRows()) { content }
+            DividedRowStack { content }
                 .background(SettingsPalette.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.cardCornerRadius, style: .continuous))
                 .overlay(
@@ -178,10 +178,24 @@ struct SettingsSection<Content: View>: View {
     }
 }
 
+/// Rows with hairlines between them and nothing around them. A card is this
+/// plus a fill and an edge; a list that *is* its whole section — history — is
+/// just this, sitting on the page at the same inset as its label.
+struct DividedRowStack<Content: View>: View {
+    var dividerInset: CGFloat = SettingsMetrics.rowHorizontalPadding
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        _VariadicView.Tree(DividedRows(dividerInset: dividerInset)) { content }
+    }
+}
+
 /// Stacks a card's rows and puts a hairline between each pair — but not after
 /// the last one, which is the whole reason this needs the variadic view: a
 /// plain `VStack` can't tell which of its children is last.
 private struct DividedRows: _VariadicView_UnaryViewRoot {
+    let dividerInset: CGFloat
+
     @ViewBuilder
     func body(children: _VariadicView.Children) -> some View {
         let rows = Array(children)
@@ -194,7 +208,7 @@ private struct DividedRows: _VariadicView_UnaryViewRoot {
                    !child[PlainRowTrait.self],
                    !rows[index + 1][PlainRowTrait.self] {
                     Divider()
-                        .padding(.leading, SettingsMetrics.rowHorizontalPadding)
+                        .padding(.leading, dividerInset)
                 }
             }
         }
@@ -255,12 +269,15 @@ struct SettingsRow<Control: View>: View {
 /// label/control split.
 struct SettingsCustomRow<Content: View>: View {
     var verticalPadding: CGFloat = SettingsMetrics.rowVerticalPadding
+    /// A row inside a card is inset from its edge. A row sitting straight on
+    /// the page has no edge to clear and lines up with the group label instead.
+    var horizontalPadding: CGFloat = SettingsMetrics.rowHorizontalPadding
     @ViewBuilder var content: Content
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, SettingsMetrics.rowHorizontalPadding)
+            .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
     }
 }
