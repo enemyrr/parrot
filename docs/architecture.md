@@ -361,7 +361,7 @@ Fetching is FluidAudio's (Hugging Face into its own cache), but the *state* of i
 
 ### `Settings` and `SettingsStore`
 
-One `Codable` struct, stored as a single JSON blob in `UserDefaults(suiteName: "com.digimata.parrot")`. It replaced a hand-edited `config.toml`.
+One `Codable` struct, stored as a single JSON blob in `UserDefaults(suiteName: "com.enemyrr.parrot")`. It replaced a hand-edited `config.toml`.
 
 One blob under one key, rather than a key per field, buys three things:
 

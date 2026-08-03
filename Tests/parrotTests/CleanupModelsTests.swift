@@ -74,7 +74,7 @@ final class CleanupModelsTests: XCTestCase {
     // MARK: - Cache
 
     /// A scratch suite, so a test run can't drop the list the app is using.
-    private static let suite = "com.digimata.parrot.tests.modelcache"
+    private static let suite = "com.enemyrr.parrot.tests.modelcache"
 
     override func setUp() {
         super.setUp()

@@ -6,7 +6,7 @@ import Foundation
 /// `.app` bundle. parrot ships as a single binary, so a plain LaunchAgent
 /// plist is the simpler, more honest mechanism.
 enum LaunchAgent {
-    static let label = "com.digimata.parrot"
+    static let label = "com.enemyrr.parrot"
 
     /// The canonical install path for a script install. `--binary` can point
     /// the agent anywhere — handy for running a dev build without sudo.

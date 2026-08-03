@@ -7,7 +7,7 @@ Hold the *other* key and what you say becomes an instruction instead: parrot rea
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/enemyrr/parrot/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/enemyrr/parrot/main/scripts/install.sh | sh
 parrot start    # run in the background, now and at every login
 ```
 
@@ -215,7 +215,7 @@ One window — `parrot settings`, or **Settings…** under the menu bar icon (`�
 | **Integrations** | Which apps parrot reads names from, and whether each is working right now |
 | **About** | Behind the parrot glyph under the sidebar. **Permissions** (microphone, Accessibility, the Fn mapping, re-checked live) and **Accounts** (API keys, and what's using each) open as sheets from here, as does starting over |
 
-**Changes apply immediately** — no restart, no file to edit. Settings live in macOS preferences (`com.digimata.parrot`), API keys in the Keychain.
+**Changes apply immediately** — no restart, no file to edit. Settings live in macOS preferences (`com.enemyrr.parrot`), API keys in the Keychain.
 
 Upgrading from a version that used `~/.config/parrot/config.toml`? The first launch imports it and renames it to `config.toml.migrated`. Nothing is lost, and nothing reads it again.
 

@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP_NAME="parrot"
-BUNDLE_ID="com.digimata.parrot"
+BUNDLE_ID="com.enemyrr.parrot"
 NOTARY_PROFILE="${NOTARY_PROFILE:-parrot}"
 DIST="dist"
 APP="$DIST/$APP_NAME.app"

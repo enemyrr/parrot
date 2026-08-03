@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # parrot installer.
-#   curl -fsSL https://raw.githubusercontent.com/enemyrr/parrot/master/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/enemyrr/parrot/main/scripts/install.sh | sh
 #
 # Fetches the latest arm64 macOS binary from GitHub Releases, drops it
 # in /usr/local/bin, and strips the quarantine xattr so Gatekeeper doesn't

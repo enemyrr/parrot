@@ -5,7 +5,7 @@ import Security
 /// Keys never go in the settings blob — that is ordinary preferences, readable
 /// by anything running as the user.
 enum Keychain {
-    private static let service = "com.digimata.parrot"
+    private static let service = "com.enemyrr.parrot"
 
     /// A provider that needs an API key. Raw value doubles as the CLI
     /// spelling in `parrot cleanup set-key <provider>`.

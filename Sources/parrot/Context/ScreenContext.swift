@@ -199,7 +199,7 @@ enum ScreenReader {
         AlwaysExcluded(
             name: "Parrot",
             fragment: "parrot",
-            bundleIDs: ["com.digimata.parrot"]
+            bundleIDs: ["com.enemyrr.parrot"]
         ),
     ]
 

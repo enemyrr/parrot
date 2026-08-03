@@ -18,7 +18,7 @@ final class SettingsStore: ObservableObject {
     // Nonisolated so the CLI's synchronous read path can reach them: the class
     // is main-actor, but these two are constants and the storage they name is
     // thread-safe on its own.
-    nonisolated static let suiteName = "com.digimata.parrot"
+    nonisolated static let suiteName = "com.enemyrr.parrot"
     nonisolated private static let key = "settings"
     nonisolated private static let onboardingKey = "onboarding.completed"
 
@@ -50,7 +50,7 @@ final class SettingsStore: ObservableObject {
 
     // MARK: - Storage
 
-    /// Both launch styles have to land on the same `com.digimata.parrot.plist`.
+    /// Both launch styles have to land on the same `com.enemyrr.parrot.plist`.
     ///
     /// As a bare binary on `$PATH` there is no bundle identifier, so the
     /// standard domain is keyed off the executable name and the explicit suite
