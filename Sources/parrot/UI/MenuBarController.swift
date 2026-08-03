@@ -75,6 +75,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         recentItem.submenu = recentMenu
         menu.addItem(recentItem)
 
+        // Under Recent, above the microphone: it belongs with the transcripts,
+        // not with the settings — it makes one rather than changes how they're
+        // made.
+        let transcribeFile = NSMenuItem(
+            title: "Transcribe File…",
+            action: #selector(transcribeFileClicked),
+            keyEquivalent: ""
+        )
+        transcribeFile.target = self
+        menu.addItem(transcribeFile)
+
         menu.addItem(.separator())
 
         // Same deal as Recent: built on open, because devices come and go while
@@ -312,6 +323,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func microphoneClicked(_ sender: NSMenuItem) {
         guard let uid = sender.representedObject as? String else { return }
         settings.settings.audio.inputDeviceUID = uid
+    }
+
+    /// Picks the file here, then hands it to the pane that can show a progress
+    /// line and a transcript. The window comes forward either way — a job with
+    /// nowhere to report is worse than no job.
+    @objc private func transcribeFileClicked() {
+        guard let url = FileTranscriptionJob.chooseFile() else { return }
+        openSettings(.transcribe)
+        FileTranscriptionJob.shared.start(url: url)
     }
 
     @objc private func openSettingsClicked() { openSettings(.home) }

@@ -112,7 +112,7 @@ struct HomePane: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 9) {
                 Text("Hold")
-                HeroKeycap(label: store.settings.hotkey.displayLabel) {
+                HeroKeycap(hotkey: store.settings.hotkey) {
                     dialog = .shortcuts
                 }
                 // "on" and the cycling word are one phrase, so they sit closer
@@ -470,78 +470,107 @@ struct HomePane: View {
 /// Clicking it opens the bindings dialog — the cap *is* the setting, so the
 /// cap is the way in.
 ///
-/// It has to look pressable at a glance, without a card behind it to say so:
-/// a raised face, a lip under it, and a hover that tints rather than just
-/// outlines. The whole thing sinks onto the lip when clicked.
+/// Styled after the physical thing: MacBook keys are matte black in every
+/// appearance, with a tight corner radius and no shine. No drop shadow —
+/// a real key sits nearly flush, so depth comes from a crisp 1pt lip under
+/// the bottom edge instead, and hovering brightens the face like backlight.
 private struct HeroKeycap: View {
-    let label: String
+    let hotkey: Hotkey
     let open: () -> Void
 
     @State private var hovering = false
-
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: SettingsMetrics.cardCornerRadius, style: .continuous)
-    }
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Button(action: open) {
-            cap
+            legend
+                .foregroundStyle(.white.opacity(hovering ? 1 : 0.9))
+                .background(KeycapMetrics.shape.fill(face))
                 .overlay(
-                    // The glass carries the surface; this ring is the "you can
-                    // click me" answer, so it stays in both worlds.
-                    shape.strokeBorder(
-                        hovering ? Color.accentColor : SettingsPalette.keycapBorder,
-                        lineWidth: hovering ? 1.5 : 0.5
+                    // The machined sheen along the top edge — also what keeps
+                    // a black key from melting into a dark window.
+                    KeycapMetrics.shape.strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.25), .white.opacity(0.06)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
                     )
                 )
-                .contentShape(shape)
+                .contentShape(KeycapMetrics.shape)
         }
         .buttonStyle(KeycapPressStyle())
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("Change key bindings")
-        .accessibilityLabel("Dictation key: \(label). Change key bindings")
+        .accessibilityLabel("Dictation key: \(hotkey.displayName). Change key bindings")
     }
 
-    /// Liquid Glass where the OS has it, a raised keycap everywhere else — the
-    /// same rule the `GlassTabs` puck follows.
+    /// Printed like the physical cap: fn gets the globe bottom-left with the
+    /// small "fn" top-right, other bare modifiers get their symbol in the
+    /// corner over the lowercase name, and a chord gets its label centered.
     @ViewBuilder
-    private var cap: some View {
-        let text = Text(label)
-            .font(.system(size: 19, weight: .medium, design: .rounded))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-        if #available(macOS 26.0, *) {
-            text
-                .glassEffect(.regular.interactive(), in: shape)
-                .background(hoverTint)
+    private var legend: some View {
+        if hotkey == .fn {
+            ZStack {
+                Text("fn")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                Image(systemName: "globe")
+                    .font(.system(size: 13))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            }
+            .padding(8)
+            .frame(width: KeycapMetrics.size, height: KeycapMetrics.size)
+        } else if hotkey.isBareModifier, let name = hotkey.modifiers.singleName {
+            ZStack {
+                Text(hotkey.modifiers.symbols)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                Text(name.lowercased())
+                    .font(.system(size: 10))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+            .padding(8)
+            .frame(minWidth: KeycapMetrics.size)
+            .frame(height: KeycapMetrics.size)
         } else {
-            text
-                .background(shape.fill(SettingsPalette.keycapFace))
-                .background(hoverTint)
+            Text(hotkey.displayLabel)
+                .font(.system(size: 16, weight: .medium))
+                .padding(.horizontal, 14)
+                .frame(minWidth: KeycapMetrics.size)
+                .frame(height: KeycapMetrics.size)
         }
     }
 
-    /// A wash of the accent under the face, so hovering warms the button up
-    /// instead of only drawing a line around it.
-    private var hoverTint: some View {
-        shape.fill(Color.accentColor.opacity(hovering ? 0.14 : 0))
+    private var face: Color {
+        let resting = scheme == .dark ? Color(white: 0.2) : Color(white: 0.13)
+        return hovering ? resting.opacity(0.85) : resting
     }
 }
 
-/// Down onto the lip, like a key. `.plain` alone gives no press feedback at
-/// all, which makes the cap read as a label rather than the way in.
+private enum KeycapMetrics {
+    /// A bare modifier is drawn at the real key's square footprint; chords
+    /// keep this height and widen.
+    static let size: CGFloat = 52
+
+    /// Tighter than the cards on purpose: a keycap's corners are barely
+    /// rounded, and the card radius made it read as a pill.
+    static var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+    }
+}
+
+/// Down onto the lip, like a key. The lip is a fixed 1pt sliver of the key's
+/// side peeking out below the cap; pressing offsets the cap over it, so the
+/// key sinks flush with no shadow involved.
 private struct KeycapPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        let pressed = configuration.isPressed
-        return configuration.label
-            .offset(y: pressed ? 1.5 : 0)
-            .shadow(
-                color: .black.opacity(pressed ? 0.14 : 0.38),
-                radius: pressed ? 1.5 : 4,
-                y: pressed ? 0.5 : 2
-            )
-            .animation(.easeOut(duration: 0.1), value: pressed)
+        configuration.label
+            .offset(y: configuration.isPressed ? 1 : 0)
+            .background(KeycapMetrics.shape.fill(.black.opacity(0.8)).offset(y: 1))
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
@@ -554,6 +583,12 @@ private struct RotatingWords: View {
 
     @State private var index = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Rotating in a window nobody is looking at is pure battery. `.inactive`
+    /// covers the case this is actually costing something: settings opened,
+    /// clicked away from, and left open for the rest of the day.
+    @Environment(\.controlActiveState) private var activeState
+
+    private var isActive: Bool { activeState != .inactive }
 
     var body: some View {
         // The clip belongs to the container, not the word: a `.clipped()` on
@@ -565,9 +600,12 @@ private struct RotatingWords: View {
                 .transition(reduceMotion ? .opacity : .push(from: .bottom))
         }
         .clipped()
-        .task {
+        .task(id: isActive) {
             // Tied to the view's lifetime, so it stops with the pane and isn't
-            // restarted by every redraw the way a Timer publisher is.
+            // restarted by every redraw the way a Timer publisher is. Keyed on
+            // `isActive` so resigning active cancels it rather than leaving it
+            // spinning behind another app's window.
+            guard isActive else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { return }

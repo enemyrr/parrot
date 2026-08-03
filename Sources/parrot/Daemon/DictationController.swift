@@ -131,6 +131,14 @@ final class DictationController {
             self.context.engineStatus = .failed(reason)
             self.menuBar?.setEngine(.failed)
         }
+        // A file transcription borrows the engine that is already loaded rather
+        // than loading a second copy of the same model. It serializes against
+        // dictation — the transcriber is an actor — so a long file makes the
+        // next hotkey press wait its turn, which is the right way round: the
+        // file was asked for explicitly and finishes in a fraction of its own
+        // length.
+        FileTranscriptionJob.shared.liveEngine = { [weak self] in self?.transcriber }
+
         context.startOverlayPreview = { [weak self] sensitivity in
             self?.startOverlayPreview(sensitivity: sensitivity)
         }
@@ -247,7 +255,7 @@ final class DictationController {
         context.engineStatus = .loading(model.isLocal ? "Loading \(model.id)" : "Checking \(model.id)")
         menuBar?.setEngine(.loading)
 
-        let transcriber = makeTranscriber(for: model)
+        let transcriber = makeEngine(for: model)
         self.transcriber = transcriber
 
         Task { [weak self] in
@@ -280,14 +288,12 @@ final class DictationController {
         }
     }
 
-    /// The one place a registry entry becomes a running engine.
-    private func makeTranscriber(for model: TranscriptionModel) -> Transcriber {
-        switch model.engine {
-        case .parakeet:
-            return ParakeetTranscriber(model: model, language: resolveLanguage())
-        case .openai:
-            return OpenAITranscriber(model: model)
-        }
+    /// The daemon's engine, from the shared factory. The language hint is
+    /// resolved only for the engine that takes one: `resolveLanguage` logs what
+    /// it decided, and it has nothing to say about a cloud model that never
+    /// sees it.
+    private func makeEngine(for model: TranscriptionModel) -> Transcriber {
+        makeTranscriber(for: model, language: model.engine == .parakeet ? resolveLanguage() : nil)
     }
 
     /// Resolves the language hint, reporting anything odd to the log. The

@@ -28,6 +28,15 @@ enum LanguageSelection {
         /// Configured languages disagree on script; filtering is off.
         case conflicting(scripts: [String])
         case unknownCodes([String])
+
+        /// The hint to hand the decoder, if there is one. Every case but
+        /// `.filter` means no filtering — an unknown code or a script clash is
+        /// reported where someone can act on it, and never silently narrows the
+        /// decode on its way past.
+        var language: Language? {
+            if case .filter(let language) = self { return language }
+            return nil
+        }
     }
 
     static func resolve(_ codes: [String]) -> Resolution {

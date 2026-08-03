@@ -4,6 +4,7 @@ import SwiftUI
 enum SettingsPane: String, CaseIterable, Identifiable {
     case home
     case squawk
+    case transcribe
     case models
     case cleanup
     case style
@@ -21,6 +22,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .home: return "Home"
         case .squawk: return "Squawk"
+        case .transcribe: return "Transcribe"
         case .models: return "Models"
         case .cleanup: return "Cleanup"
         case .style: return "Style"
@@ -38,6 +40,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .home: return "house"
         case .squawk: return "sparkles"
+        case .transcribe: return "waveform.badge.plus"
         case .models: return "waveform"
         case .cleanup: return "wand.and.stars"
         case .style: return "person.wave.2"
@@ -177,6 +180,8 @@ struct SettingsRootView: View {
             )
         case .squawk:
             SquawkPane(store: store)
+        case .transcribe:
+            TranscribePane(store: store)
         case .cleanup:
             CleanupPane(store: store)
         case .style:

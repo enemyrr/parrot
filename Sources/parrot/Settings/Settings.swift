@@ -217,11 +217,15 @@ enum DictationMode: String, Codable, Equatable, CaseIterable {
     /// Speech is an instruction. What lands at the cursor is a model's answer,
     /// written against what's on screen.
     case squawk
+    /// A recording off disk rather than off the microphone. No key produced it,
+    /// and nothing was typed at a cursor — see `FileTranscription`.
+    case file
 
     var displayName: String {
         switch self {
         case .dictate: return "Dictation"
         case .squawk: return "Squawk"
+        case .file: return "File"
         }
     }
 }

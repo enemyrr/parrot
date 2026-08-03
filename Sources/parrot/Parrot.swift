@@ -12,6 +12,7 @@ struct Parrot: ParsableCommand {
             SettingsCommand.self, Setup.self, Doctor.self, Models.self,
             History.self, Stats.self, Key.self, Cleanup.self, Install.self,
             OverlayPreview.self, ContextCommand.self, RosterCommand.self, SquawkCommand.self,
+            TranscribeCommand.self,
         ],
         defaultSubcommand: Run.self
     )

@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 
 /// What the transcriber is told about the audio beyond the samples.
@@ -23,6 +24,32 @@ protocol Transcriber {
     /// startup so the first hotkey press isn't blocked on it.
     func warmUp() async throws
     func transcribe(_ audio: [Float], context: TranscriptionContext) async throws -> String
+    /// Transcribe a file on disk. In the protocol rather than only in the
+    /// extension so a conformance can take the URL itself: a decoder that
+    /// streams off disk turns an hour of audio from a 230 MB array into a
+    /// constant-memory read, and a default implementation would hide that.
+    func transcribe(fileAt url: URL, context: TranscriptionContext) async throws -> String
+}
+
+extension Transcriber {
+    /// Decode, then hand over the samples — right for anything that has to hold
+    /// the whole recording anyway, which an upload does.
+    func transcribe(fileAt url: URL, context: TranscriptionContext) async throws -> String {
+        try await transcribe(AudioFileReader.samples(at: url), context: context)
+    }
+}
+
+/// The one place a registry entry becomes a running engine.
+///
+/// Shared by the daemon and by `parrot transcribe`, so a file typed at the
+/// command line goes through the same decoder the hotkey does.
+func makeTranscriber(for model: TranscriptionModel, language: Language? = nil) -> Transcriber {
+    switch model.engine {
+    case .parakeet:
+        return ParakeetTranscriber(model: model, language: language)
+    case .openai:
+        return OpenAITranscriber(model: model)
+    }
 }
 
 enum TranscriberError: Error, CustomStringConvertible {

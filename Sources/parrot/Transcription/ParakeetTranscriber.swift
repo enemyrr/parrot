@@ -69,6 +69,28 @@ actor ParakeetTranscriber: Transcriber {
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Hands the URL to FluidAudio rather than decoding it here.
+    ///
+    /// It memory-maps the file and walks it in chunks past its own streaming
+    /// threshold, so a two-hour recording costs about as much memory as a
+    /// two-second one. Decoding to an array first would cost 460 MB for the
+    /// same file and buy nothing.
+    ///
+    /// Only for containers `AVAudioFile` opens. A video's audio has to be
+    /// demuxed before anything can stream it, so that falls back to the
+    /// protocol's decode-then-transcribe default.
+    func transcribe(fileAt url: URL, context: TranscriptionContext) async throws -> String {
+        guard AudioFileReader.isPlainAudioFile(url) else {
+            return try await transcribe(AudioFileReader.samples(at: url), context: context)
+        }
+        if manager == nil { try await warmUp() }
+        guard let manager else { throw TranscriberError.notLoaded }
+
+        var state = try TdtDecoderState(decoderLayers: decoderLayers)
+        let result = try await manager.transcribe(url, decoderState: &state, language: language)
+        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func version(for engineModelID: String) -> AsrModelVersion {
         engineModelID.hasSuffix("v2") ? .v2 : .v3
     }

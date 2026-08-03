@@ -367,7 +367,10 @@ struct OverlayPill: View {
     /// place the user is told which of the two they are sitting through.
     static func accent(_ mode: DictationMode, _ state: RecordingOverlay.State) -> OverlayAccent {
         switch mode {
-        case .dictate: return .dictate
+        // A file transcription never raises the pill — there is no microphone
+        // hot and nothing to reassure anyone about. It shares dictation's look
+        // only so this switch has an answer for a mode it can't be shown in.
+        case .dictate, .file: return .dictate
         case .squawk: return state == .thinking ? .thinking : .squawk
         }
     }
@@ -483,7 +486,7 @@ private struct Waveform: View {
     var body: some View {
         Group {
             switch model.mode {
-            case .dictate:
+            case .dictate, .file:
                 TravellingBars(history: model.history, accent: accent)
             case .squawk:
                 SiriLine(level: model.level, accent: accent)
